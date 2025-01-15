@@ -61,8 +61,7 @@ jobs:
           release_name: "Release ${{ steps.get_version.outputs.VERSION }}"
           draft: false
           prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       # 8. Upload binaries
       - name: Upload Windows x86-64 artifact
@@ -72,8 +71,7 @@ jobs:
           asset_path: ./myapp-windows-amd64.exe
           asset_name: myapp-windows-amd64.exe
           asset_content_type: application/octet-stream
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       # - name: Upload Windows ARM64 artifact
       #   uses: actions/upload-release-asset@v1
