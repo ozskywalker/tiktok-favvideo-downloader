@@ -1,0 +1,234 @@
+package main
+
+import (
+	"bufio"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+)
+
+// Data represents the structure of user_data_tiktok.json
+type Data struct {
+	Activity struct {
+		FavoriteVideos struct {
+			FavoriteVideoList []struct {
+				Link string `json:"Link"`
+			} `json:"FavoriteVideoList"`
+		} `json:"Favorite Videos"`
+	} `json:"Activity"`
+}
+
+// getOrDownloadYtdlp checks if yt-dlp.exe is present in the current directory.
+// If not, it downloads the latest version from GitHub.
+func getOrDownloadYtdlp() error {
+	const exeName = "yt-dlp.exe"
+
+	// Check if the file already exists
+	if _, err := os.Stat(exeName); err == nil {
+		fmt.Println("[*] Found yt-dlp.exe in the current directory. Skipping download.")
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("[!!!] error checking for existing %s: %v", exeName, err)
+	}
+
+	fmt.Println("[*] yt-dlp.exe not found. Downloading the latest release from GitHub...")
+
+	// 1. Retrieve the latest release info from GitHub
+	resp, err := http.Get("https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest")
+	if err != nil {
+		return fmt.Errorf("[!!!] failed to fetch the latest release info: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var release struct {
+		Assets []struct {
+			Name               string `json:"name"`
+			BrowserDownloadURL string `json:"browser_download_url"`
+		} `json:"assets"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		return fmt.Errorf("[!!!] failed to parse GitHub API release JSON: %v", err)
+	}
+
+	// 2. Find the asset with name "yt-dlp.exe"
+	var downloadURL string
+	for _, asset := range release.Assets {
+		if strings.EqualFold(asset.Name, exeName) {
+			downloadURL = asset.BrowserDownloadURL
+			break
+		}
+	}
+	if downloadURL == "" {
+		return fmt.Errorf("[!!!] could not find %s in the latest release assets", exeName)
+	}
+
+	fmt.Printf("[*] Downloading %s...\n", downloadURL)
+
+	// 3. Download the file
+	out, err := os.Create(exeName)
+	if err != nil {
+		return fmt.Errorf("[!!!] error creating %s: %v", exeName, err)
+	}
+	defer out.Close()
+
+	downloadResp, err := http.Get(downloadURL)
+	if err != nil {
+		return fmt.Errorf("[!!!] failed to download %s: %v", exeName, err)
+	}
+	defer downloadResp.Body.Close()
+
+	// 4. Copy the response body to the file
+	if _, err := io.Copy(out, downloadResp.Body); err != nil {
+		return fmt.Errorf("[!!!] failed to write %s to disk: %v", exeName, err)
+	}
+
+	fmt.Println("[*] Successfully downloaded yt-dlp")
+	return nil
+}
+
+// isRunningInPowershell does a simple check to see if we're (likely) in PowerShell
+func isRunningInPowershell() bool {
+	// A common environment variable set by PowerShell is PSModulePath,
+	// often containing 'PowerShell' in its path. This is a heuristic.
+	return strings.Contains(os.Getenv("PSModulePath"), "PowerShell")
+}
+
+func main() {
+	fmt.Println("[*] TikTok Favorite Videos Extractor (Go Version)")
+
+	// Default JSON file
+	jsonFile := "user_data_tiktok.json"
+
+	// If an argument is given, treat that as the path to the JSON
+	if len(os.Args) > 1 {
+		// If user passes -h or --help, just print usage.
+		if os.Args[1] == "-h" || os.Args[1] == "--help" {
+			printUsage()
+			return
+		}
+		jsonFile = os.Args[1]
+	}
+
+	// Check if JSON file exists before proceeding
+	if _, err := os.Stat(jsonFile); os.IsNotExist(err) {
+		fmt.Printf("[!!!] Error: JSON file '%s' does not exist.\n", jsonFile)
+		printUsage()
+		os.Exit(1)
+	}
+
+	// Attempt to get or download yt-dlp.exe
+	if err := getOrDownloadYtdlp(); err != nil {
+		fmt.Printf("[!] Warning: %v\n", err)
+		// Not exiting here so you can still generate fav_videos.txt if needed
+	}
+
+	// Open and parse the JSON
+	file, err := os.Open(jsonFile)
+	if err != nil {
+		fmt.Printf("[!!!] Error opening JSON file: %v\n", err)
+		os.Exit(1)
+	}
+	defer file.Close()
+
+	var data Data
+	if err := json.NewDecoder(file).Decode(&data); err != nil {
+		fmt.Printf("[!!!] Error parsing JSON. Are you sure '%s' is valid JSON?\n", jsonFile)
+		fmt.Printf("Details: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Extract video URLs
+	videoList := data.Activity.FavoriteVideos.FavoriteVideoList
+	fmt.Printf("[*] Successfully loaded %d favorite video entries from '%s'\n", len(videoList), jsonFile)
+
+	var videoURLs []string
+	for _, item := range videoList {
+		videoURLs = append(videoURLs, item.Link)
+	}
+
+	// Write them to fav_videos.txt (will truncate if exists)
+	outputName := "fav_videos.txt"
+	outFile, err := os.Create(outputName)
+	if err != nil {
+		fmt.Printf("[!!!] Error creating %s: %v\n", outputName, err)
+		os.Exit(1)
+	}
+	defer outFile.Close()
+
+	for _, url := range videoURLs {
+		_, writeErr := outFile.WriteString(url + "\n")
+		if writeErr != nil {
+			fmt.Printf("[!!!] Error writing to %s: %v\n", outputName, writeErr)
+			os.Exit(1)
+		}
+	}
+
+	fmt.Printf("[*] Extracted %d video URLs to '%s'.\n", len(videoURLs), outputName)
+
+	// Construct the recommended yt-dlp command
+	psPrefix := ""
+	if isRunningInPowershell() {
+		psPrefix = ".\\"
+	}
+	ytDlpCmd := fmt.Sprintf("%syt-dlp.exe -a \"%s\" --output \"%%(upload_date)s_%%(uploader_id)s.%%(ext)s\"", psPrefix, outputName)
+
+	fmt.Println("[*] Done! You can now run yt-dlp like this:")
+	fmt.Printf("  %s\n", ytDlpCmd)
+
+	// Offer to run the command automatically
+	fmt.Print("\n*** Would you like me to run yt-dlp for you instead? (y/n): ")
+	answer := bufio.NewReader(os.Stdin)
+	response, _ := answer.ReadString('\n')
+	response = strings.TrimSpace(strings.ToLower(response))
+	if response == "y" || response == "yes" {
+		runYtdlp(psPrefix, outputName)
+	}
+}
+
+// runYtdlp runs the yt-dlp command for the user
+func runYtdlp(psPrefix, outputName string) {
+	fmt.Println("[*] Running yt-dlp now...")
+	cmdStr := fmt.Sprintf("%syt-dlp.exe", psPrefix)
+	cmd := exec.Command(cmdStr, "-a", outputName, "--output", "%(upload_date)s_%(uploader_id)s.%(ext)s")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Printf("[!!!] Error running yt-dlp: %v\n", err)
+	} else {
+		fmt.Println("[*] yt-dlp completed successfully.")
+	}
+}
+
+func getExeName() string {
+	exePath, err := os.Executable()
+	if err != nil {
+		// If we can’t get the path, default to a known name
+		return "tiktok-favvideo-downloader.exe"
+	}
+	// Otherwise, return the filename (base) part of the path
+	return filepath.Base(exePath)
+}
+
+// printUsage prints basic usage info for this program.
+func printUsage() {
+	exeName := getExeName()
+
+	fmt.Println("\nUsage:")
+	fmt.Printf("  %s [optional path to user_data_tiktok.json]\n", exeName)
+	fmt.Println("\nExamples:")
+	fmt.Println("  1) Double-click (no arguments) if 'user_data_tiktok.json' is in the same folder.")
+	fmt.Printf("  2) Or drag & drop a JSON file onto '%s' to specify a different JSON file.\n", exeName)
+	fmt.Printf("  3) Or run from command line: %s path\\to\\my_tiktok_data.json\n", exeName)
+	fmt.Println("\nHow do I even use this thing?")
+	fmt.Println("  1. Go to https://www.tiktok.com/setting")
+	fmt.Println("  2. Under Privacy, Data, click on \"Download your data\"")
+	fmt.Println("  3. Select \"All Data\" & \"JSON\", then hit Request Data")
+	fmt.Println("  4. Wait for data to be generated, can take 5-15min, hit refresh every once in a while")
+	fmt.Println("  5. Download and extract the JSON file into same directory as this executable")
+	fmt.Printf("  6. Run %s\n\n", exeName)
+}

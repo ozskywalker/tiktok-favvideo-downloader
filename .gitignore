@@ -23,3 +23,9 @@ go.work.sum
 
 # env file
 .env
+
+# artifacts from testing
+fav_videos.txt
+yt-dlp.exe
+tiktok-favvideo-downloader.exe
+user_data_tiktok.json
