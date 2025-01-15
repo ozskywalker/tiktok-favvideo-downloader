@@ -13,10 +13,10 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v4
+        uses: actions/setup-go@v5
         with:
           go-version: '1.23.4'
 
@@ -26,7 +26,7 @@ jobs:
           TAG=$(git describe --tags --abbrev=0 || echo "v1.0")
           echo "VERSION=$TAG" >> $GITHUB_OUTPUT
 
-      - name: Run Linter
+      - name: Run Go Vet
         run: go vet ./...
 
       - name: Run Unit Tests
