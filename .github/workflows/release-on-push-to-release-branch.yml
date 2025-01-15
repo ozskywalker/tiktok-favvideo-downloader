@@ -50,4 +50,5 @@ jobs:
         uses: ncipollo/release-action@v1.15.0
         with:
           artifacts: "tiktok-favvideo-downloader.exe"
-          bodyFile: "README.md"
+          allowUpdates: true
+          
