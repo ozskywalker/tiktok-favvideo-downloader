@@ -19,17 +19,17 @@ jobs:
     steps:
       # 1. Check out the repository code
       - name: Check out code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
 
       # 2. Set up Go environment
       - name: Set up Go
-        uses: actions/setup-go@v2
+        uses: actions/setup-go@v5
         with:
           go-version: '1.23.4'  # or whichever version of Go you prefer
 
       # 3. (Optional) Cache Go modules for faster builds
       - name: Cache modules
-        uses: actions/cache@v2
+        uses: actions/cache@v4
         with:
           path: |
             ~/go/pkg/mod
