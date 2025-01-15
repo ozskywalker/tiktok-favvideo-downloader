@@ -47,7 +47,7 @@ jobs:
 
       # 7. Create a new GitHub release with this version
       - name: Publish GitHub Release
-        uses: ncipollo/release-action@v1
+        uses: ncipollo/release-action@v1.15.0
         with:
           artifacts: "tiktok-favvideo-downloader.exe"
           bodyFile: "README.md"
