@@ -1,10 +1,11 @@
-name: Go Test and Lint on dev push and main PRs
+name: Go Test and Lint on dev push and main/release PRs
 
 on:
   # Run this workflow on any pull request targeting main
   pull_request:
     branches:
       - main
+      - release
 
   # Run this workflow on every push to the dev branch
   push:
@@ -14,21 +15,28 @@ on:
 jobs:
   build-test-lint:
     runs-on: ubuntu-latest
+    permissions:
+      # Required: allow read access to the content for analysis.
+      contents: read
+      # Optional: allow read access to pull request. Use with `only-new-issues` option.
+      pull-requests: read
+      # Optional: allow write access to checks to allow the action to annotate code in the PR.
+      checks: write
 
     steps:
       # 1. Check out the repository code
       - name: Check out code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
 
       # 2. Set up Go environment
       - name: Set up Go
-        uses: actions/setup-go@v2
+        uses: actions/setup-go@v5
         with:
-          go-version: '1.20'  # or whichever version of Go you prefer
+          go-version: '1.23.4'  # or whichever version of Go you prefer
 
       # 3. (Optional) Cache Go modules for faster builds
       - name: Cache modules
-        uses: actions/cache@v2
+        uses: actions/cache@v4
         with:
           path: |
             ~/go/pkg/mod
@@ -40,15 +48,9 @@ jobs:
       - name: Install dependencies
         run: go mod download
 
-      # 5. Install golangci-lint (for lint checks)
-      - name: Install golangci-lint
-        run: |
-          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | \
-          sh -s -- -b $(go env GOPATH)/bin v1.52.2
-
-      # 6. Run lint checks
+      # 5. Run lint checks (golangci-lint-action v6.1.1)
       - name: Run lint checks
-        run: golangci-lint run --timeout 5m
+        uses: golangci/golangci-lint-action@v6.1.1
 
       # 7. Run Go tests
       - name: Run Go tests

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -41,7 +40,7 @@ func TestGetExeName(t *testing.T) {
 // TestParseFavoriteVideosFromFile verifies that we can parse JSON data correctly.
 func TestParseFavoriteVideosFromFile(t *testing.T) {
 	// Create a temporary JSON file
-	tmpFile, err := ioutil.TempFile("", "testdata_*.json")
+	tmpFile, err := os.CreateTemp("", "testdata_*.json")
 	if err != nil {
 		t.Fatalf("failed to create temp file: %v", err)
 	}
@@ -83,7 +82,7 @@ func TestParseFavoriteVideosFromFile(t *testing.T) {
 // TestWriteFavoriteVideosToFile checks that we write URLs to file properly.
 func TestWriteFavoriteVideosToFile(t *testing.T) {
 	// Create a temp output file
-	tmpOut, err := ioutil.TempFile("", "fav_videos_*.txt")
+	tmpOut, err := os.CreateTemp("", "fav_videos_*.txt")
 	if err != nil {
 		t.Fatalf("failed to create temp file: %v", err)
 	}
@@ -100,7 +99,7 @@ func TestWriteFavoriteVideosToFile(t *testing.T) {
 	}
 
 	// Verify the contents
-	content, err := ioutil.ReadFile(outputName)
+	content, err := os.ReadFile(outputName)
 	if err != nil {
 		t.Fatalf("failed to read output file: %v", err)
 	}
@@ -117,21 +116,32 @@ func TestWriteFavoriteVideosToFile(t *testing.T) {
 // We mock the HTTP calls with httptest.
 func TestGetOrDownloadYtdlp(t *testing.T) {
 	// 1. Create a temp directory to run our test so we don't pollute the real workspace
-	tmpDir, err := ioutil.TempDir("", "ytdlp_test")
+	tmpDir, err := os.MkdirTemp("", "ytdlp_test")
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
 	defer os.RemoveAll(tmpDir) // cleanup
-	oldCwd, _ := os.Getwd()
-	defer os.Chdir(oldCwd)
+	oldCwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
 
-	os.Chdir(tmpDir)
+	// Instead of defer os.Chdir(oldCwd):
+	defer func() {
+		if err := os.Chdir(oldCwd); err != nil {
+			t.Fatalf("failed to revert to original working dir: %v", err)
+		}
+	}()
+
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("failed to chdir to %s: %v", tmpDir, err)
+	}
 
 	exeName := "yt-dlp.exe"
 
 	// 2. Test scenario where file already exists
 	// Create a dummy file to simulate existing exe
-	if err := ioutil.WriteFile(exeName, []byte("dummy data"), 0644); err != nil {
+	if err := os.WriteFile(exeName, []byte("dummy data"), 0644); err != nil {
 		t.Fatalf("failed to create dummy exe file: %v", err)
 	}
 
@@ -157,11 +167,15 @@ func TestGetOrDownloadYtdlp(t *testing.T) {
 	// as well as the "download" for the exe file.
 	downloadHandler := http.NewServeMux()
 	downloadHandler.HandleFunc("/repos/yt-dlp/yt-dlp/releases/latest", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(mockReleaseJSON))
+		if _, err := w.Write([]byte(mockReleaseJSON)); err != nil {
+			t.Fatalf("failed to write mock release JSON: %v", err)
+		}
 	})
 	downloadHandler.HandleFunc("/yt-dlp.exe", func(w http.ResponseWriter, r *http.Request) {
 		// Return some fake exe content
-		w.Write([]byte("fake exe bytes"))
+		if _, err := w.Write([]byte("fake exe bytes")); err != nil {
+			t.Fatalf("failed to write fake exe bytes: %v", err)
+		}
 	})
 	ts := httptest.NewServer(downloadHandler)
 	defer ts.Close()
@@ -199,8 +213,6 @@ func (r *rewriterRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 		newURL := r.host + req.URL.Path
 		req.URL.Scheme = "http"
 		req.URL.Host = strings.TrimPrefix(r.host, "http://")
-		req.URL.Path = req.URL.Path
-		req.URL.RawQuery = req.URL.RawQuery
 		req.URL, _ = req.URL.Parse(newURL)
 	}
 	return r.rt.RoundTrip(req)
