@@ -2,8 +2,7 @@
 
 Backup your favorite'd tiktok videos in case this upcoming ban means you don't get access to them anymore. 
 
-![Release](https://github.com/ozskywalker/tiktok-favvideo-downloader/actions/workflows/release-on-push-to-release-branch.yml/badge.svg?
-branch=release)
+![Release](https://github.com/ozskywalker/tiktok-favvideo-downloader/actions/workflows/release-on-push-to-release-branch.yml/badge.svg?branch=release)
 
 # Let's go... how do I make this work?!
 
