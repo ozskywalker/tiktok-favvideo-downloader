@@ -199,8 +199,6 @@ func (r *rewriterRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 		newURL := r.host + req.URL.Path
 		req.URL.Scheme = "http"
 		req.URL.Host = strings.TrimPrefix(r.host, "http://")
-		req.URL.Path = req.URL.Path
-		req.URL.RawQuery = req.URL.RawQuery
 		req.URL, _ = req.URL.Parse(newURL)
 	}
 	return r.rt.RoundTrip(req)
