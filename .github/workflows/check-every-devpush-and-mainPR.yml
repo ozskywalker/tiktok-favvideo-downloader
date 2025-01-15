@@ -1,0 +1,55 @@
+name: Go Test and Lint on dev push and main PRs
+
+on:
+  # Run this workflow on any pull request targeting main
+  pull_request:
+    branches:
+      - main
+
+  # Run this workflow on every push to the dev branch
+  push:
+    branches:
+      - dev
+
+jobs:
+  build-test-lint:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Check out the repository code
+      - name: Check out code
+        uses: actions/checkout@v2
+
+      # 2. Set up Go environment
+      - name: Set up Go
+        uses: actions/setup-go@v2
+        with:
+          go-version: '1.20'  # or whichever version of Go you prefer
+
+      # 3. (Optional) Cache Go modules for faster builds
+      - name: Cache modules
+        uses: actions/cache@v2
+        with:
+          path: |
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      # 4. Install dependencies
+      - name: Install dependencies
+        run: go mod download
+
+      # 5. Install golangci-lint (for lint checks)
+      - name: Install golangci-lint
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | \
+          sh -s -- -b $(go env GOPATH)/bin v1.52.2
+
+      # 6. Run lint checks
+      - name: Run lint checks
+        run: golangci-lint run --timeout 5m
+
+      # 7. Run Go tests
+      - name: Run Go tests
+        run: go test -v ./...

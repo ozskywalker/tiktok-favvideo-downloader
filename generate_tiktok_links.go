@@ -12,6 +12,10 @@ import (
 	"strings"
 )
 
+var (
+	version = "dev" // This will be overridden at build time via ldflags
+)
+
 // Data represents the structure of user_data_tiktok.json
 type Data struct {
 	Activity struct {
@@ -181,7 +185,7 @@ func printUsage() {
 }
 
 func main() {
-	fmt.Println("[*] TikTok Favorite Videos Extractor (Go Version)")
+	fmt.Printf("[*] TikTok Favorite Videos Extractor (Version %s)\n", version)
 
 	// Default JSON file
 	jsonFile := "user_data_tiktok.json"

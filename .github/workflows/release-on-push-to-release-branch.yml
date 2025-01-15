@@ -1,0 +1,80 @@
+name: Release on push to 'release' branch
+
+on:
+  push:
+    branches:
+      - release
+
+jobs:
+  build-test-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Check out the code
+      - name: Check out repository
+        uses: actions/checkout@v3
+
+      # 2. Set up Go
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.23.4'
+
+      # 3. Derive version from Git (as an example)
+      #
+      # This fetches the latest tag (e.g., "v1.2.3") with a fallback to v1.0
+      - name: Get version from Git
+        id: get_version
+        run: |
+          TAG=$(git describe --tags --abbrev=0 || echo "v1.0")
+          echo "VERSION=$TAG" >> $GITHUB_OUTPUT
+
+      # 4. Lint check and tests
+      - name: Lint
+        run: go vet ./...
+
+      - name: Tests
+        run: go test ./... -v
+
+      # 5. Build Windows x86-64 binary with version injected
+      - name: Build Windows x86-64
+        run: |
+          GOOS=windows GOARCH=amd64 go build \
+            -ldflags="-X 'main.version=${{ steps.get_version.outputs.VERSION }}'" \
+            -o myapp-windows-amd64.exe .
+
+      # 6. ARM64 build will go here if demand is high enough
+      # - name: Build Windows ARM64
+      #   run: |
+      #     GOOS=windows GOARCH=arm64 go build \
+      #       -ldflags="-X 'main.version=${{ steps.get_version.outputs.VERSION }}'" \
+      #       -o myapp-windows-arm64.exe .
+
+      # 7. Create a new GitHub release with this version
+      # If you'd like to create a new tag from the version, you can do so 
+      # (but here we assume the tag already exists).
+      - name: Create GitHub Release
+        id: create_release
+        uses: actions/create-release@v1
+        with:
+          tag_name: ${{ steps.get_version.outputs.VERSION }}
+          release_name: "Release ${{ steps.get_version.outputs.VERSION }}"
+          draft: false
+          prerelease: false
+
+      # 8. Upload binaries
+      - name: Upload Windows x86-64 artifact
+        uses: actions/upload-release-asset@v1
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./myapp-windows-amd64.exe
+          asset_name: myapp-windows-amd64.exe
+          asset_content_type: application/octet-stream
+
+      # - name: Upload Windows ARM64 artifact
+      #   uses: actions/upload-release-asset@v1
+      #   with:
+      #     upload_url: ${{ steps.create_release.outputs.upload_url }}
+      #     asset_path: ./myapp-windows-arm64.exe
+      #     asset_name: myapp-windows-arm64.exe
+      #     asset_content_type: application/octet-stream
