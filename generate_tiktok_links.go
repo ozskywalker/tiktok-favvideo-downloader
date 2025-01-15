@@ -24,22 +24,22 @@ type Data struct {
 }
 
 // getOrDownloadYtdlp checks if yt-dlp.exe is present in the current directory.
-// If not, it downloads the latest version from GitHub.
-func getOrDownloadYtdlp() error {
-	const exeName = "yt-dlp.exe"
-
+// If not, it downloads the latest version from GitHub. Accepts an *http.Client
+// so we can mock the download in tests.
+func getOrDownloadYtdlp(client *http.Client, exeName string) error {
 	// Check if the file already exists
 	if _, err := os.Stat(exeName); err == nil {
-		fmt.Println("[*] Found yt-dlp.exe in the current directory. Skipping download.")
+		fmt.Printf("[*] Found %s in the current directory. Skipping download.\n", exeName)
 		return nil
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("[!!!] error checking for existing %s: %v", exeName, err)
 	}
 
-	fmt.Println("[*] yt-dlp.exe not found. Downloading the latest release from GitHub...")
+	fmt.Printf("[*] %s not found. Downloading the latest release from GitHub...\n", exeName)
 
 	// 1. Retrieve the latest release info from GitHub
-	resp, err := http.Get("https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest")
+	releaseURL := "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest"
+	resp, err := client.Get(releaseURL)
 	if err != nil {
 		return fmt.Errorf("[!!!] failed to fetch the latest release info: %v", err)
 	}
@@ -76,7 +76,7 @@ func getOrDownloadYtdlp() error {
 	}
 	defer out.Close()
 
-	downloadResp, err := http.Get(downloadURL)
+	downloadResp, err := client.Get(downloadURL)
 	if err != nil {
 		return fmt.Errorf("[!!!] failed to download %s: %v", exeName, err)
 	}
@@ -91,103 +91,50 @@ func getOrDownloadYtdlp() error {
 	return nil
 }
 
-// isRunningInPowershell does a simple check to see if we're (likely) in PowerShell
-func isRunningInPowershell() bool {
-	// A common environment variable set by PowerShell is PSModulePath,
-	// often containing 'PowerShell' in its path. This is a heuristic.
-	return strings.Contains(os.Getenv("PSModulePath"), "PowerShell")
-}
-
-func main() {
-	fmt.Println("[*] TikTok Favorite Videos Extractor (Go Version)")
-
-	// Default JSON file
-	jsonFile := "user_data_tiktok.json"
-
-	// If an argument is given, treat that as the path to the JSON
-	if len(os.Args) > 1 {
-		// If user passes -h or --help, just print usage.
-		if os.Args[1] == "-h" || os.Args[1] == "--help" {
-			printUsage()
-			return
-		}
-		jsonFile = os.Args[1]
-	}
-
-	// Check if JSON file exists before proceeding
-	if _, err := os.Stat(jsonFile); os.IsNotExist(err) {
-		fmt.Printf("[!!!] Error: JSON file '%s' does not exist.\n", jsonFile)
-		printUsage()
-		os.Exit(1)
-	}
-
-	// Attempt to get or download yt-dlp.exe
-	if err := getOrDownloadYtdlp(); err != nil {
-		fmt.Printf("[!] Warning: %v\n", err)
-		// Not exiting here so you can still generate fav_videos.txt if needed
-	}
-
-	// Open and parse the JSON
+// parseFavoriteVideosFromFile reads the given JSON file and returns the list of favorite video URLs.
+func parseFavoriteVideosFromFile(jsonFile string) ([]string, error) {
 	file, err := os.Open(jsonFile)
 	if err != nil {
-		fmt.Printf("[!!!] Error opening JSON file: %v\n", err)
-		os.Exit(1)
+		return nil, fmt.Errorf("error opening JSON file: %v", err)
 	}
 	defer file.Close()
 
 	var data Data
 	if err := json.NewDecoder(file).Decode(&data); err != nil {
-		fmt.Printf("[!!!] Error parsing JSON. Are you sure '%s' is valid JSON?\n", jsonFile)
-		fmt.Printf("Details: %v\n", err)
-		os.Exit(1)
+		return nil, fmt.Errorf("error parsing JSON: %v", err)
 	}
 
-	// Extract video URLs
 	videoList := data.Activity.FavoriteVideos.FavoriteVideoList
-	fmt.Printf("[*] Successfully loaded %d favorite video entries from '%s'\n", len(videoList), jsonFile)
-
 	var videoURLs []string
 	for _, item := range videoList {
 		videoURLs = append(videoURLs, item.Link)
 	}
 
-	// Write them to fav_videos.txt (will truncate if exists)
-	outputName := "fav_videos.txt"
+	return videoURLs, nil
+}
+
+// writeFavoriteVideosToFile writes the video URLs into the given output file.
+func writeFavoriteVideosToFile(videoURLs []string, outputName string) error {
 	outFile, err := os.Create(outputName)
 	if err != nil {
-		fmt.Printf("[!!!] Error creating %s: %v\n", outputName, err)
-		os.Exit(1)
+		return fmt.Errorf("[!!!] Error creating %s: %v", outputName, err)
 	}
 	defer outFile.Close()
 
 	for _, url := range videoURLs {
 		_, writeErr := outFile.WriteString(url + "\n")
 		if writeErr != nil {
-			fmt.Printf("[!!!] Error writing to %s: %v\n", outputName, writeErr)
-			os.Exit(1)
+			return fmt.Errorf("[!!!] Error writing to %s: %v", outputName, writeErr)
 		}
 	}
+	return nil
+}
 
-	fmt.Printf("[*] Extracted %d video URLs to '%s'.\n", len(videoURLs), outputName)
-
-	// Construct the recommended yt-dlp command
-	psPrefix := ""
-	if isRunningInPowershell() {
-		psPrefix = ".\\"
-	}
-	ytDlpCmd := fmt.Sprintf("%syt-dlp.exe -a \"%s\" --output \"%%(upload_date)s_%%(uploader_id)s.%%(ext)s\"", psPrefix, outputName)
-
-	fmt.Println("[*] Done! You can now run yt-dlp like this:")
-	fmt.Printf("  %s\n", ytDlpCmd)
-
-	// Offer to run the command automatically
-	fmt.Print("\n*** Would you like me to run yt-dlp for you instead? (y/n): ")
-	answer := bufio.NewReader(os.Stdin)
-	response, _ := answer.ReadString('\n')
-	response = strings.TrimSpace(strings.ToLower(response))
-	if response == "y" || response == "yes" {
-		runYtdlp(psPrefix, outputName)
-	}
+// isRunningInPowershell does a simple check to see if we're (likely) in PowerShell.
+func isRunningInPowershell() bool {
+	// A common environment variable set by PowerShell is PSModulePath,
+	// often containing 'PowerShell' in its path. This is a heuristic.
+	return strings.Contains(os.Getenv("PSModulePath"), "PowerShell")
 }
 
 // runYtdlp runs the yt-dlp command for the user
@@ -231,4 +178,71 @@ func printUsage() {
 	fmt.Println("  4. Wait for data to be generated, can take 5-15min, hit refresh every once in a while")
 	fmt.Println("  5. Download and extract the JSON file into same directory as this executable")
 	fmt.Printf("  6. Run %s\n\n", exeName)
+}
+
+func main() {
+	fmt.Println("[*] TikTok Favorite Videos Extractor (Go Version)")
+
+	// Default JSON file
+	jsonFile := "user_data_tiktok.json"
+
+	// If an argument is given, treat that as the path to the JSON
+	if len(os.Args) > 1 {
+		// If user passes -h or --help, just print usage.
+		if os.Args[1] == "-h" || os.Args[1] == "--help" {
+			printUsage()
+			return
+		}
+		jsonFile = os.Args[1]
+	}
+
+	// Check if JSON file exists before proceeding
+	if _, err := os.Stat(jsonFile); os.IsNotExist(err) {
+		fmt.Printf("[!!!] Error: JSON file '%s' does not exist.\n", jsonFile)
+		printUsage()
+		os.Exit(1)
+	}
+
+	// Attempt to get or download yt-dlp.exe
+	if err := getOrDownloadYtdlp(http.DefaultClient, "yt-dlp.exe"); err != nil {
+		fmt.Printf("[!] Warning: %v\n", err)
+		// Not exiting here so you can still generate fav_videos.txt if needed
+	}
+
+	// Extract video URLs
+	videoURLs, err := parseFavoriteVideosFromFile(jsonFile)
+	if err != nil {
+		fmt.Printf("[!!!] Error parsing JSON. Are you sure '%s' is valid JSON?\n", jsonFile)
+		fmt.Printf("Details: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("[*] Successfully loaded %d favorite video entries from '%s'\n", len(videoURLs), jsonFile)
+
+	// Write them to fav_videos.txt
+	outputName := "fav_videos.txt"
+	if err := writeFavoriteVideosToFile(videoURLs, outputName); err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+	fmt.Printf("[*] Extracted %d video URLs to '%s'.\n", len(videoURLs), outputName)
+
+	// Construct the recommended yt-dlp command
+	psPrefix := ""
+	if isRunningInPowershell() {
+		psPrefix = ".\\"
+	}
+	ytDlpCmd := fmt.Sprintf("%syt-dlp.exe -a \"%s\" --output \"%%(upload_date)s_%%(uploader_id)s.%%(ext)s\"", psPrefix, outputName)
+
+	fmt.Println("[*] Done! You can now run yt-dlp like this:")
+	fmt.Printf("  %s\n", ytDlpCmd)
+
+	// Offer to run the command automatically
+	fmt.Print("\n*** Would you like me to run yt-dlp for you instead? (y/n): ")
+	answer := bufio.NewReader(os.Stdin)
+	response, _ := answer.ReadString('\n')
+	response = strings.TrimSpace(strings.ToLower(response))
+	if response == "y" || response == "yes" {
+		runYtdlp(psPrefix, outputName)
+	}
 }
