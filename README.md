@@ -28,12 +28,22 @@ Binary is not signed (didn't have time+budget), you WILL have to tell Windows yo
 4. Windows will complain because the .exe isn't signed; **simply click "More Info" then "Run anyway" one-time.**
 5. Let it run!
 
-[ You can also drag & drop a .txt file full of links onto the .exe, or run it from cmd.exe/Windows Terminal/PowerShell - whatever your heart desires ]
+Your video files will appear in the same folder as the .exe.
+
+## But wait! I downloaded the files, but there's a blank screen when I try to play them!
+
+Your Windows PC or video player is missing a codec that Microsoft does not ship by default (ask the lawyers why).
+
+Either:
+1. Use [VLC](https://www.videolan.org/vlc/) to play the videos
+2. Or, [go buy this from the Microsoft Store (99 cents)](https://apps.microsoft.com/detail/9nmzlz57r3t7?hl=en-us&gl=US).
 
 ## Everything else
 
-* Found a problem? [Open an issue and tell me all about it.](https://github.com/ozskywalker/tiktok-favvideo-downloader/issues)
+* **Found a problem?** [Open an issue and tell me all about it.](https://github.com/ozskywalker/tiktok-favvideo-downloader/issues)
 
-* Uses [yt-dlp](https://github.com/yt-dlp/yt-dlp) to download the videos, play the resulting files with [VLC](https://www.videolan.org/vlc/) or your favorite media player.
+* **Power users:** You can also drag & drop a .txt file full of links onto the .exe, or run it from a command prompt/Windows Terminal window
 
 * **Compatible with Windows x86-64 only** - if you want an Windows ARM64 release, [leave an emoji or add a comment on this ARM64 feature request](https://github.com/ozskywalker/tiktok-favvideo-downloader/issues/1) and I'll respond accordingly.
+
+* Uses [yt-dlp](https://github.com/yt-dlp/yt-dlp) to download the videos, play the resulting files with [VLC](https://www.videolan.org/vlc/) or your favorite media player. This isn't rocket science.
