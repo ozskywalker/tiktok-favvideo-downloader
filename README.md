@@ -22,7 +22,7 @@ Binary is not signed (didn't have time+budget), you WILL have to tell Windows yo
 ![screenshot2](https://github.com/ozskywalker/tiktok-favvideo-downloader/blob/main/readme_images/tiktok_ready_to_download.png)
 
 ## Second, feed your list into the utility
-1. [Download me from the Releases page](https://github.com/ozskywalker/tiktok-favvideo-downloader/releases)
+1. [Download the .exe from the Releases page](https://github.com/ozskywalker/tiktok-favvideo-downloader/releases)
 2. Place the .exe in the **same extracted folder** as the JSON file
 3. Double-click on tiktok-favvideo-downloader.exe
 4. Windows will complain because the .exe isn't signed; **simply click "More Info" then "Run anyway" one-time.**
