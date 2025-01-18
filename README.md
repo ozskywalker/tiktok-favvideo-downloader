@@ -4,7 +4,7 @@ Backup your favorite'd tiktok videos in case this upcoming ban means you don't g
 
 While it grabs favorite'd videos by default, it will grab your liked videos too if you say yes at the prompt.
 
-Binary is not signed (didn't have time+budget), you WILL have to tell Windows you trust it.
+Binary is not signed (didn't have time+budget), you WILL have to tell Windows you trust it. 
 
 ![Release](https://github.com/ozskywalker/tiktok-favvideo-downloader/actions/workflows/release-on-push-to-release-branch.yml/badge.svg)
 
