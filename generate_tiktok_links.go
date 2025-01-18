@@ -24,6 +24,12 @@ type Data struct {
 				Link string `json:"Link"`
 			} `json:"FavoriteVideoList"`
 		} `json:"Favorite Videos"`
+		LikedVideos struct {
+			ItemFavoriteList []struct {
+				Date string `json:"Date"`
+				Link string `json:"Link"`
+			} `json:"ItemFavoriteList"`
+		} `json:"Like List"`
 	} `json:"Activity"`
 }
 
@@ -96,7 +102,7 @@ func getOrDownloadYtdlp(client *http.Client, exeName string) error {
 }
 
 // parseFavoriteVideosFromFile reads the given JSON file and returns the list of favorite video URLs.
-func parseFavoriteVideosFromFile(jsonFile string) ([]string, error) {
+func parseFavoriteVideosFromFile(jsonFile string, includeLiked bool) ([]string, error) {
 	file, err := os.Open(jsonFile)
 	if err != nil {
 		return nil, fmt.Errorf("error opening JSON file: %v", err)
@@ -108,10 +114,18 @@ func parseFavoriteVideosFromFile(jsonFile string) ([]string, error) {
 		return nil, fmt.Errorf("error parsing JSON: %v", err)
 	}
 
-	videoList := data.Activity.FavoriteVideos.FavoriteVideoList
-	var videoURLs []string
-	for _, item := range videoList {
+	videoURLs := make([]string, 0)
+
+	// Always add favorited videos
+	for _, item := range data.Activity.FavoriteVideos.FavoriteVideoList {
 		videoURLs = append(videoURLs, item.Link)
+	}
+
+	// Add liked videos if the user requested them
+	if includeLiked {
+		for _, item := range data.Activity.LikedVideos.ItemFavoriteList {
+			videoURLs = append(videoURLs, item.Link)
+		}
 	}
 
 	return videoURLs, nil
@@ -213,8 +227,18 @@ func main() {
 		// Not exiting here so you can still generate fav_videos.txt if needed
 	}
 
+	includeLiked := false
+	fmt.Print("[*] Would you like to include 'Liked' videos as well? (y/n, default is 'n'): ")
+	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Scan()
+	input := strings.TrimSpace(strings.ToLower(scanner.Text()))
+	// Update includeLiked to true if the input is "y"
+	if input == "y" || input == "yes" {
+		includeLiked = true
+	}
+
 	// Extract video URLs
-	videoURLs, err := parseFavoriteVideosFromFile(jsonFile)
+	videoURLs, err := parseFavoriteVideosFromFile(jsonFile, includeLiked)
 	if err != nil {
 		fmt.Printf("[!!!] Error parsing JSON. Are you sure '%s' is valid JSON?\n", jsonFile)
 		fmt.Printf("Details: %v\n", err)
