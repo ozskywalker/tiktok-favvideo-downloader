@@ -4,6 +4,8 @@ Backup your favorite'd tiktok videos in case this upcoming ban means you don't g
 
 While it grabs favorite'd videos by default, it will grab your liked videos too if you say yes at the prompt.
 
+Binary is not signed (didn't have time+budget), you WILL have to tell Windows you trust it.
+
 ![Release](https://github.com/ozskywalker/tiktok-favvideo-downloader/actions/workflows/release-on-push-to-release-branch.yml/badge.svg)
 
 # Let's go... how do I make this work?!
@@ -19,6 +21,8 @@ While it grabs favorite'd videos by default, it will grab your liked videos too 
 ## Second, feed your list into the utility
 1. [Download me from the Releases page](https://github.com/ozskywalker/tiktok-favvideo-downloader/releases) and place the .exe in the same directory as the JSON file
 2. Double-click on tiktok-favvideo-downloader.exe and let it run!
+
+NOTE: Windows Defender SmartScreen may pop-up because the binary is not signed. Simply click "More Info" then "Run anyway" one-time.
 
 [ You can also drag & drop a .txt file full of links onto the .exe, or run it from cmd.exe/Windows Terminal/PowerShell - whatever your heart desires ]
 
