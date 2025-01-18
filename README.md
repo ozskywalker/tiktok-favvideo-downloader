@@ -1,6 +1,8 @@
 # tiktok-favvideo-downloader
 
-Backup your favorite'd tiktok videos in case this upcoming ban means you don't get access to them anymore. 
+Backup your favorite'd tiktok videos in case this upcoming ban means you don't get access to them anymore.
+
+While it grabs favorite'd videos by default, it will grab your liked videos too if you say yes at the prompt.
 
 ![Release](https://github.com/ozskywalker/tiktok-favvideo-downloader/actions/workflows/release-on-push-to-release-branch.yml/badge.svg)
 

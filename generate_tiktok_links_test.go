@@ -46,36 +46,56 @@ func TestParseFavoriteVideosFromFile(t *testing.T) {
 	}
 	defer os.Remove(tmpFile.Name())
 
-	// Write some minimal JSON data to the file
+	// Write JSON data that includes both favorited and liked videos
 	jsonContent := `{
-        "Activity": {
-            "Favorite Videos": {
-                "FavoriteVideoList": [
-                    {"Link": "https://www.tiktok.com/@someone/video/1"},
-                    {"Link": "https://www.tiktok.com/@someone/video/2"}
-                ]
-            }
-        }
-    }`
+		"Activity": {
+			"Favorite Videos": {
+				"FavoriteVideoList": [
+					{"Link": "https://www.tiktok.com/@someone/video/1"},
+					{"Link": "https://www.tiktok.com/@someone/video/2"}
+				]
+			},
+			"Like List": {
+				"ItemFavoriteList": [
+					{"Date": "2023-01-01", "Link": "https://www.tiktok.com/@someone/liked/1"},
+					{"Date": "2023-01-02", "Link": "https://www.tiktok.com/@someone/liked/2"}
+				]
+			}
+		}
+	}`
 	if _, err := tmpFile.WriteString(jsonContent); err != nil {
 		t.Fatalf("failed to write to temp file: %v", err)
 	}
 	tmpFile.Close()
 
-	// Parse the file
-	videoURLs, err := parseFavoriteVideosFromFile(tmpFile.Name())
+	// Test case: only favorited videos
+	videoURLs, err := parseFavoriteVideosFromFile(tmpFile.Name(), false)
 	if err != nil {
 		t.Errorf("expected no error, got %v", err)
 	}
-
 	if len(videoURLs) != 2 {
-		t.Errorf("expected 2 video links, got %d", len(videoURLs))
+		t.Errorf("expected 2 favorited video links, got %d", len(videoURLs))
 	}
 	if videoURLs[0] != "https://www.tiktok.com/@someone/video/1" {
-		t.Errorf("unexpected first link: %s", videoURLs[0])
+		t.Errorf("unexpected first favorited link: %s", videoURLs[0])
 	}
 	if videoURLs[1] != "https://www.tiktok.com/@someone/video/2" {
-		t.Errorf("unexpected second link: %s", videoURLs[1])
+		t.Errorf("unexpected second favorited link: %s", videoURLs[1])
+	}
+
+	// Test case: favorited and liked videos
+	videoURLs, err = parseFavoriteVideosFromFile(tmpFile.Name(), true)
+	if err != nil {
+		t.Errorf("expected no error, got %v", err)
+	}
+	if len(videoURLs) != 4 {
+		t.Errorf("expected 4 total video links, got %d", len(videoURLs))
+	}
+	if videoURLs[2] != "https://www.tiktok.com/@someone/liked/1" {
+		t.Errorf("unexpected third link: %s", videoURLs[2])
+	}
+	if videoURLs[3] != "https://www.tiktok.com/@someone/liked/2" {
+		t.Errorf("unexpected fourth link: %s", videoURLs[3])
 	}
 }
 
