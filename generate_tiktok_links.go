@@ -103,7 +103,7 @@ func getOrDownloadYtdlp(client *http.Client, exeName string) error {
 
 // parseFavoriteVideosFromFile reads the given JSON file and returns the list of favorite video URLs.
 func parseFavoriteVideosFromFile(jsonFile string, includeLiked bool) ([]string, error) {
-	file, err := os.Open(jsonFile)
+	file, err := os.Open(filepath.Clean(jsonFile))
 	if err != nil {
 		return nil, fmt.Errorf("error opening JSON file: %v", err)
 	}
