@@ -1,8 +1,6 @@
 # tiktok-favvideo-downloader
 
-Backup your favorite'd tiktok videos in case this upcoming ban means you don't get access to them anymore.
-
-While it grabs favorite'd videos by default, it will grab your liked videos too if you say yes at the prompt.
+Backup all those tiktok videos you've favorited & liked, just like the digital hoarder you really truly are.
 
 Binary is not signed (didn't have time+budget), you WILL have to tell Windows you trust it. 
 
@@ -43,7 +41,5 @@ Either:
 * **Found a problem?** [Open an issue and tell me all about it.](https://github.com/ozskywalker/tiktok-favvideo-downloader/issues)
 
 * **Power users:** You can also drag & drop a .txt file full of links onto the .exe, or run it from a command prompt/Windows Terminal window
-
-* **Compatible with Windows x86-64 only** - if you want an Windows ARM64 release, [leave an emoji or add a comment on this ARM64 feature request](https://github.com/ozskywalker/tiktok-favvideo-downloader/issues/1) and I'll respond accordingly.
 
 * Uses [yt-dlp](https://github.com/yt-dlp/yt-dlp) to download the videos, play the resulting files with [VLC](https://www.videolan.org/vlc/) or your favorite media player. This isn't rocket science.
