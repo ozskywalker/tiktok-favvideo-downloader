@@ -48,9 +48,9 @@ jobs:
       - name: Install dependencies
         run: go mod download
 
-      # 5. Run lint checks (golangci-lint-action v6.1.1)
+      # 5. Run lint checks (golangci-lint-action)
       - name: Run lint checks
-        uses: golangci/golangci-lint-action@v6.1.1
+        uses: golangci/golangci-lint-action@v8.0.0
 
       # 7. Run Go tests
       - name: Run Go tests
