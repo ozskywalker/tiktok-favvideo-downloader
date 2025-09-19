@@ -32,7 +32,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'  # or whichever version of Go you prefer
+          go-version: '1.25.1'  # or whichever version of Go you prefer
 
       # 3. (Optional) Cache Go modules for faster builds
       - name: Cache modules
