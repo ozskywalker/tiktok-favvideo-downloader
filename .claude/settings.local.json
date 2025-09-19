@@ -3,7 +3,8 @@
     "allow": [
       "Bash(go test:*)",
       "Bash(go fmt:*)",
-      "Bash(go vet:*)"
+      "Bash(go vet:*)",
+      "Bash(git tag:*)"
     ],
     "deny": [],
     "ask": []
