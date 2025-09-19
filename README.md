@@ -2,9 +2,11 @@
 
 Backup all those tiktok videos you've favorited & liked, just like the digital hoarder you really truly are.
 
-Binary is not signed (didn't have time+budget), you WILL have to tell Windows you trust it. 
+Binary is not signed (didn't have time+budget), you WILL have to tell Windows you trust it.
 
-![Release](https://github.com/ozskywalker/tiktok-favvideo-downloader/actions/workflows/release-on-push-to-release-branch.yml/badge.svg)
+![Release](https://github.com/ozskywalker/tiktok-favvideo-downloader/actions/workflows/release-on-tag.yml/badge.svg)
+[![Go Version](https://img.shields.io/badge/Go-1.25.1-blue.svg)](https://golang.org/doc/devel/release.html)
+![Claude Used](https://img.shields.io/badge/Claude-Used-4B5AEA)
 
 # Let's go... how do I make this work?!
 
