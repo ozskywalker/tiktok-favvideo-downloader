@@ -39,11 +39,11 @@ jobs:
             -o tiktok-favvideo-downloader.exe .
 
       # 6. ARM64 build will go here if demand is high enough
-      # - name: Build Windows ARM64
-      #   run: |
-      #     GOOS=windows GOARCH=arm64 go build \
-      #       -ldflags="-X 'main.version=${{ steps.get_version.outputs.VERSION }}'" \
-      #       -o tiktok-favvideo-downloader-ARM64.exe .
+      - name: Build Windows-on-ARM binary (ARM64)
+        run: |
+          GOOS=windows GOARCH=arm64 go build \
+            -ldflags="-X 'main.version=${{ steps.get_version.outputs.VERSION }}'" \
+            -o tiktok-favvideo-downloader-ARM64.exe .
 
       # 7. Create a new GitHub release with this version
       - name: Publish release
