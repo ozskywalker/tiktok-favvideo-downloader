@@ -155,14 +155,31 @@ func isRunningInPowershell() bool {
 	return strings.Contains(os.Getenv("PSModulePath"), "PowerShell")
 }
 
-// runYtdlp runs the yt-dlp command for the user
-func runYtdlp(psPrefix, outputName string) {
-	fmt.Println("[*] Running yt-dlp now...")
-	cmdStr := fmt.Sprintf("%syt-dlp.exe", psPrefix)
-	cmd := exec.Command(cmdStr, "-a", outputName, "--output", "%(upload_date)s_%(uploader_id)s.%(ext)s")
+// CommandRunner interface for testing command execution
+type CommandRunner interface {
+	Run(name string, args ...string) error
+}
+
+// RealCommandRunner implements CommandRunner using exec.Command
+type RealCommandRunner struct{}
+
+func (r *RealCommandRunner) Run(name string, args ...string) error {
+	cmd := exec.Command(name, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
+	return cmd.Run()
+}
+
+// runYtdlp runs the yt-dlp command for the user
+func runYtdlp(psPrefix, outputName string) {
+	runYtdlpWithRunner(&RealCommandRunner{}, psPrefix, outputName)
+}
+
+// runYtdlpWithRunner allows dependency injection for testing
+func runYtdlpWithRunner(runner CommandRunner, psPrefix, outputName string) {
+	fmt.Println("[*] Running yt-dlp now...")
+	cmdStr := fmt.Sprintf("%syt-dlp.exe", psPrefix)
+	if err := runner.Run(cmdStr, "-a", outputName, "--output", "%(upload_date)s_%(uploader_id)s.%(ext)s"); err != nil {
 		fmt.Printf("[!!!] Error running yt-dlp: %v\n", err)
 	} else {
 		fmt.Println("[*] yt-dlp completed successfully.")
