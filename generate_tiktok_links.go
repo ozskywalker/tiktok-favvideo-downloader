@@ -192,7 +192,7 @@ func printUsage() {
 	fmt.Println("\nHow do I even use this thing?")
 	fmt.Println("  1. Go to https://www.tiktok.com/setting")
 	fmt.Println("  2. Under Privacy, Data, click on \"Download your data\"")
-	fmt.Println("  3. Select \"All Data\" & \"JSON\", then hit Request Data")
+	fmt.Println("  3. Select \"JSON\" & \"All Available Data\", then hit Request Data")
 	fmt.Println("  4. Wait for data to be generated, can take 5-15min, hit refresh every once in a while")
 	fmt.Println("  5. Download and extract the JSON file into same directory as this executable")
 	fmt.Printf("  6. Run %s\n\n", exeName)
