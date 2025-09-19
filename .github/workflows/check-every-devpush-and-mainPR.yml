@@ -1,11 +1,10 @@
-name: Go Test and Lint on dev push and main/release PRs
+name: Go Test and Lint on dev push and main PRs
 
 on:
   # Run this workflow on any pull request targeting main
   pull_request:
     branches:
       - main
-      - release
 
   # Run this workflow on every push to the dev branch
   push:

@@ -1,4 +1,4 @@
-name: Release branch
+name: Release on tag
 
 on:
   push:
@@ -38,7 +38,6 @@ jobs:
             -ldflags="-X 'main.version=${{ steps.get_version.outputs.VERSION }}'" \
             -o tiktok-favvideo-downloader-x86_64.exe .
 
-      # 6. ARM64 build will go here if demand is high enough
       - name: Build Windows-on-ARM binary (ARM64)
         run: |
           GOOS=windows GOARCH=arm64 go build \
