@@ -39,6 +39,22 @@ go build -o tiktok-favvideo-downloader.exe .
 4. **Code Review**: PRs are automatically tested via GitHub Actions
 5. **Release**: Create git tags from `main` to trigger releases
 
+### Commit Types
+
+**Changelog-visible types (should appear in releases):**
+- **`feat:`** - New features (appears in "Features" section)
+- **`fix:`** - Bug fixes (appears in "Bug fixes" section)  
+- **`sec:`** - Security-related changes (appears in "Security" section)
+- **`perf:`** - Performance improvements (appears in "Performance" section)
+
+**Internal types (should be filtered out from releases):**
+- **`docs:`** - Documentation changes
+- **`test:`** - Test changes
+- **`build:`** - Build system changes (CI/CD, workflows, linting, releases)
+- **`ci:`** - CI/CD changes (synonym for `build:`)
+- **`refactor:`** - Code refactoring
+- **`style:`** - Code style changes
+
 ### Code Quality Standards
 ```bash
 # Format code (required)
