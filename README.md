@@ -14,7 +14,7 @@ Binary is not signed (didn't have time+budget), you WILL have to tell Windows yo
 
 1. Go to https://www.tiktok.com/setting
 2. Under Privacy, Data, click on "Download your data"
-3. [Select "All Data" & "JSON", then hit Request Data](https://github.com/ozskywalker/tiktok-favvideo-downloader/blob/main/readme_images/tiktok_download_data_options.png)
+3. [Select "JSON" under file format, then "Custom" and "Likes and Favorites" under data to download, then hit Request Data](https://github.com/ozskywalker/tiktok-favvideo-downloader/blob/main/readme_images/tiktok_download_data_options.png)
 4. [Go to Download data tab, wait for "Download" button to appear (can take ~2-5min)](https://github.com/ozskywalker/tiktok-favvideo-downloader/blob/main/readme_images/tiktok_ready_to_download.png)
 5. Download and extract the archive into a folder
 
