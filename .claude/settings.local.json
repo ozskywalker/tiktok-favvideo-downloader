@@ -4,7 +4,10 @@
       "Bash(go test:*)",
       "Bash(go fmt:*)",
       "Bash(go vet:*)",
-      "Bash(git tag:*)"
+      "Bash(git tag:*)",
+      "WebSearch",
+      "Bash(go build:*)",
+      "Bash(./tiktok-favvideo-downloader.exe --help)"
     ],
     "deny": [],
     "ask": []
