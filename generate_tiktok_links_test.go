@@ -1,10 +1,12 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -49,7 +51,7 @@ func TestParseFavoriteVideosFromFile(t *testing.T) {
 
 	// Write JSON data that includes both favorited and liked videos
 	jsonContent := `{
-		"Activity": {
+		"Likes and Favorites": {
 			"Favorite Videos": {
 				"FavoriteVideoList": [
 					{"Link": "https://www.tiktok.com/@someone/video/1"},
@@ -58,8 +60,8 @@ func TestParseFavoriteVideosFromFile(t *testing.T) {
 			},
 			"Like List": {
 				"ItemFavoriteList": [
-					{"Date": "2023-01-01", "Link": "https://www.tiktok.com/@someone/liked/1"},
-					{"Date": "2023-01-02", "Link": "https://www.tiktok.com/@someone/liked/2"}
+					{"date": "2023-01-01", "link": "https://www.tiktok.com/@someone/liked/1"},
+					{"date": "2023-01-02", "link": "https://www.tiktok.com/@someone/liked/2"}
 				]
 			}
 		}
@@ -70,33 +72,45 @@ func TestParseFavoriteVideosFromFile(t *testing.T) {
 	tmpFile.Close()
 
 	// Test case: only favorited videos
-	videoURLs, err := parseFavoriteVideosFromFile(tmpFile.Name(), false)
+	videoEntries, err := parseFavoriteVideosFromFile(tmpFile.Name(), false)
 	if err != nil {
 		t.Errorf("expected no error, got %v", err)
 	}
-	if len(videoURLs) != 2 {
-		t.Errorf("expected 2 favorited video links, got %d", len(videoURLs))
+	if len(videoEntries) != 2 {
+		t.Errorf("expected 2 favorited video entries, got %d", len(videoEntries))
 	}
-	if videoURLs[0] != "https://www.tiktok.com/@someone/video/1" {
-		t.Errorf("unexpected first favorited link: %s", videoURLs[0])
+	if videoEntries[0].Link != "https://www.tiktok.com/@someone/video/1" {
+		t.Errorf("unexpected first favorited link: %s", videoEntries[0].Link)
 	}
-	if videoURLs[1] != "https://www.tiktok.com/@someone/video/2" {
-		t.Errorf("unexpected second favorited link: %s", videoURLs[1])
+	if videoEntries[0].Collection != "favorites" {
+		t.Errorf("unexpected first collection: %s", videoEntries[0].Collection)
+	}
+	if videoEntries[1].Link != "https://www.tiktok.com/@someone/video/2" {
+		t.Errorf("unexpected second favorited link: %s", videoEntries[1].Link)
+	}
+	if videoEntries[1].Collection != "favorites" {
+		t.Errorf("unexpected second collection: %s", videoEntries[1].Collection)
 	}
 
 	// Test case: favorited and liked videos
-	videoURLs, err = parseFavoriteVideosFromFile(tmpFile.Name(), true)
+	videoEntries, err = parseFavoriteVideosFromFile(tmpFile.Name(), true)
 	if err != nil {
 		t.Errorf("expected no error, got %v", err)
 	}
-	if len(videoURLs) != 4 {
-		t.Errorf("expected 4 total video links, got %d", len(videoURLs))
+	if len(videoEntries) != 4 {
+		t.Errorf("expected 4 total video entries, got %d", len(videoEntries))
 	}
-	if videoURLs[2] != "https://www.tiktok.com/@someone/liked/1" {
-		t.Errorf("unexpected third link: %s", videoURLs[2])
+	if videoEntries[2].Link != "https://www.tiktok.com/@someone/liked/1" {
+		t.Errorf("unexpected third link: %s", videoEntries[2].Link)
 	}
-	if videoURLs[3] != "https://www.tiktok.com/@someone/liked/2" {
-		t.Errorf("unexpected fourth link: %s", videoURLs[3])
+	if videoEntries[2].Collection != "liked" {
+		t.Errorf("unexpected third collection: %s", videoEntries[2].Collection)
+	}
+	if videoEntries[3].Link != "https://www.tiktok.com/@someone/liked/2" {
+		t.Errorf("unexpected fourth link: %s", videoEntries[3].Link)
+	}
+	if videoEntries[3].Collection != "liked" {
+		t.Errorf("unexpected fourth collection: %s", videoEntries[3].Collection)
 	}
 }
 
@@ -114,8 +128,14 @@ func TestWriteFavoriteVideosToFile(t *testing.T) {
 	// We'll write these URLs
 	urls := []string{"https://abc", "https://def", "https://xyz"}
 
-	// Perform the write
-	if err := writeFavoriteVideosToFile(urls, outputName); err != nil {
+	// Convert URLs to VideoEntries for testing
+	videoEntries := make([]VideoEntry, len(urls))
+	for i, url := range urls {
+		videoEntries[i] = VideoEntry{Link: url, Collection: "test"}
+	}
+
+	// Perform the write (flat structure for this test)
+	if err := writeFavoriteVideosToFile(videoEntries, outputName, false); err != nil {
 		t.Errorf("expected no error, got %v", err)
 	}
 
@@ -299,7 +319,7 @@ func TestRunYtdlpWithRunner(t *testing.T) {
 			mockRunner := &MockCommandRunner{ShouldFail: tt.shouldFail}
 
 			// Capture output for verification
-			runYtdlpWithRunner(mockRunner, tt.psPrefix, tt.outputName)
+			runYtdlpWithRunner(mockRunner, tt.psPrefix, tt.outputName, false)
 
 			// Verify command was called correctly
 			if len(mockRunner.Commands) != 1 {
@@ -336,38 +356,38 @@ func TestParseFavoriteVideosFromFileErrorScenarios(t *testing.T) {
 	}{
 		{
 			name:         "malformed JSON",
-			jsonContent:  `{"Activity": {"Favorite Videos": {`,
+			jsonContent:  `{"Likes and Favorites": {"Favorite Videos": {`,
 			includeLiked: false,
 			expectError:  true,
 		},
 		{
-			name:         "missing Activity field",
-			jsonContent:  `{"NotActivity": {}}`,
+			name:         "missing Likes and Favorites field",
+			jsonContent:  `{"NotLikes and Favorites": {}}`,
 			includeLiked: false,
 			expectError:  false, // Should not error, just return empty slice
 		},
 		{
 			name:         "missing Favorite Videos field",
-			jsonContent:  `{"Activity": {"NotFavoriteVideos": {}}}`,
+			jsonContent:  `{"Likes and Favorites": {"NotFavoriteVideos": {}}}`,
 			includeLiked: false,
 			expectError:  false,
 		},
 		{
 			name:         "empty favorite videos list",
-			jsonContent:  `{"Activity": {"Favorite Videos": {"FavoriteVideoList": []}}}`,
+			jsonContent:  `{"Likes and Favorites": {"Favorite Videos": {"FavoriteVideoList": []}}}`,
 			includeLiked: false,
 			expectError:  false,
 		},
 		{
 			name:         "missing Link field in favorite video",
-			jsonContent:  `{"Activity": {"Favorite Videos": {"FavoriteVideoList": [{"NotLink": "test"}]}}}`,
+			jsonContent:  `{"Likes and Favorites": {"Favorite Videos": {"FavoriteVideoList": [{"NotLink": "test"}]}}}`,
 			includeLiked: false,
 			expectError:  false,
 		},
 		{
 			name: "unicode characters in URLs",
 			jsonContent: `{
-				"Activity": {
+				"Likes and Favorites": {
 					"Favorite Videos": {
 						"FavoriteVideoList": [
 							{"Link": "https://www.tiktok.com/@用户/video/123"}
@@ -381,7 +401,7 @@ func TestParseFavoriteVideosFromFileErrorScenarios(t *testing.T) {
 		{
 			name: "very long URL",
 			jsonContent: fmt.Sprintf(`{
-				"Activity": {
+				"Likes and Favorites": {
 					"Favorite Videos": {
 						"FavoriteVideoList": [
 							{"Link": "https://www.tiktok.com/%s"}
@@ -464,7 +484,13 @@ func TestWriteFavoriteVideosToFileErrorScenarios(t *testing.T) {
 			tmpFile.Close()
 			defer os.Remove(tmpFile.Name())
 
-			err = writeFavoriteVideosToFile(tt.urls, tmpFile.Name())
+			// Convert URLs to VideoEntries
+			videoEntries := make([]VideoEntry, len(tt.urls))
+			for i, url := range tt.urls {
+				videoEntries[i] = VideoEntry{Link: url, Collection: "test"}
+			}
+
+			err = writeFavoriteVideosToFile(videoEntries, tmpFile.Name(), false)
 			if err != nil {
 				t.Errorf("unexpected error: %v", err)
 			}
@@ -591,7 +617,7 @@ func TestIntegrationWorkflow(t *testing.T) {
 
 	// Create test JSON file with comprehensive TikTok data
 	testJSON := `{
-		"Activity": {
+		"Likes and Favorites": {
 			"Favorite Videos": {
 				"FavoriteVideoList": [
 					{"Link": "https://www.tiktok.com/@user1/video/123"},
@@ -600,8 +626,8 @@ func TestIntegrationWorkflow(t *testing.T) {
 			},
 			"Like List": {
 				"ItemFavoriteList": [
-					{"Date": "2023-01-01", "Link": "https://www.tiktok.com/@user3/video/789"},
-					{"Date": "2023-01-02", "Link": "https://www.tiktok.com/@user4/video/101"}
+					{"date": "2023-01-01", "link": "https://www.tiktok.com/@user3/video/789"},
+					{"date": "2023-01-02", "link": "https://www.tiktok.com/@user4/video/101"}
 				]
 			}
 		}
@@ -632,18 +658,18 @@ func TestIntegrationWorkflow(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Parse JSON
-			urls, err := parseFavoriteVideosFromFile(jsonFile, tt.includeLiked)
+			videoEntries, err := parseFavoriteVideosFromFile(jsonFile, tt.includeLiked)
 			if err != nil {
 				t.Fatalf("failed to parse JSON: %v", err)
 			}
 
-			if len(urls) != tt.expectedURLs {
-				t.Errorf("expected %d URLs, got %d", tt.expectedURLs, len(urls))
+			if len(videoEntries) != tt.expectedURLs {
+				t.Errorf("expected %d video entries, got %d", tt.expectedURLs, len(videoEntries))
 			}
 
 			// Write to output file
 			outputFile := fmt.Sprintf("test_output_%s.txt", tt.name)
-			if err := writeFavoriteVideosToFile(urls, outputFile); err != nil {
+			if err := writeFavoriteVideosToFile(videoEntries, outputFile, false); err != nil {
 				t.Fatalf("failed to write URLs: %v", err)
 			}
 
@@ -659,9 +685,9 @@ func TestIntegrationWorkflow(t *testing.T) {
 			}
 
 			// Verify URLs are correct
-			for i, url := range urls {
-				if lines[i] != url {
-					t.Errorf("expected line %d to be %q, got %q", i, url, lines[i])
+			for i, entry := range videoEntries {
+				if lines[i] != entry.Link {
+					t.Errorf("expected line %d to be %q, got %q", i, entry.Link, lines[i])
 				}
 			}
 		})
@@ -696,7 +722,7 @@ func TestMainFunctionArguments(t *testing.T) {
 			args:     []string{"program", "custom_data.json"},
 			jsonFile: "custom_data.json",
 			setup: func(t *testing.T, dir string) {
-				testJSON := `{"Activity": {"Favorite Videos": {"FavoriteVideoList": [{"Link": "https://test.com"}]}}}`
+				testJSON := `{"Likes and Favorites": {"Favorite Videos": {"FavoriteVideoList": [{"Link": "https://test.com"}]}}}`
 				if err := os.WriteFile("custom_data.json", []byte(testJSON), 0644); err != nil {
 					t.Fatalf("failed to create custom JSON: %v", err)
 				}
@@ -775,7 +801,7 @@ func TestEdgeCasesAndBoundaries(t *testing.T) {
 		}
 
 		largeJSON := fmt.Sprintf(`{
-			"Activity": {
+			"Likes and Favorites": {
 				"Favorite Videos": {
 					"FavoriteVideoList": [%s]
 				}
@@ -827,7 +853,7 @@ func TestEdgeCasesAndBoundaries(t *testing.T) {
 		}
 		defer os.Remove(tmpFile.Name())
 
-		testJSON := `{"Activity": {"Favorite Videos": {"FavoriteVideoList": [{"Link": "https://test.com"}]}}}`
+		testJSON := `{"Likes and Favorites": {"Favorite Videos": {"FavoriteVideoList": [{"Link": "https://test.com"}]}}}`
 		if _, err := tmpFile.WriteString(testJSON); err != nil {
 			t.Fatalf("failed to write test JSON: %v", err)
 		}
@@ -876,8 +902,14 @@ func TestEdgeCasesAndBoundaries(t *testing.T) {
 
 		urls := []string{"https://test1.com", "https://test2.com"}
 
+		// Convert URLs to VideoEntries
+		videoEntries := make([]VideoEntry, len(urls))
+		for i, url := range urls {
+			videoEntries[i] = VideoEntry{Link: url, Collection: "test"}
+		}
+
 		for _, filename := range testFiles {
-			err := writeFavoriteVideosToFile(urls, filename)
+			err := writeFavoriteVideosToFile(videoEntries, filename, false)
 			if err != nil {
 				t.Errorf("failed to write file with special chars %q: %v", filename, err)
 				continue
@@ -896,4 +928,208 @@ func TestEdgeCasesAndBoundaries(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestCollectionOrganization tests the new collection organization features
+func TestCollectionOrganization(t *testing.T) {
+	// Test sanitizeCollectionName function
+	t.Run("sanitize_collection_names", func(t *testing.T) {
+		tests := []struct {
+			input    string
+			expected string
+		}{
+			{"favorites", "favorites"},
+			{"liked videos", "liked videos"},
+			{"my<collection>", "my_collection_"},
+			{"test/collection\\name", "test_collection_name"},
+			{"  collection.  ", "collection"},
+			{"", "unknown"},
+			{"collection:with|special*chars", "collection_with_special_chars"},
+		}
+
+		for _, tt := range tests {
+			result := sanitizeCollectionName(tt.input)
+			if result != tt.expected {
+				t.Errorf("sanitizeCollectionName(%q) = %q, want %q", tt.input, result, tt.expected)
+			}
+		}
+	})
+
+	// Test createCollectionDirectories function
+	t.Run("create_collection_directories", func(t *testing.T) {
+		// Create a temporary directory for testing
+		tmpDir, err := os.MkdirTemp("", "collection_test_*")
+		if err != nil {
+			t.Fatalf("failed to create temp dir: %v", err)
+		}
+		defer os.RemoveAll(tmpDir)
+
+		// Change to temp directory
+		originalDir, _ := os.Getwd()
+		defer os.Chdir(originalDir)
+		os.Chdir(tmpDir)
+
+		videoEntries := []VideoEntry{
+			{Link: "https://test1.com", Collection: "favorites"},
+			{Link: "https://test2.com", Collection: "liked"},
+			{Link: "https://test3.com", Collection: "favorites"},
+			{Link: "https://test4.com", Collection: "custom collection"},
+		}
+
+		// Test with organization enabled
+		err = createCollectionDirectories(videoEntries, true)
+		if err != nil {
+			t.Errorf("createCollectionDirectories failed: %v", err)
+		}
+
+		// Check if directories were created
+		expectedDirs := []string{"favorites", "liked", "custom collection"}
+		for _, dir := range expectedDirs {
+			if _, err := os.Stat(dir); os.IsNotExist(err) {
+				t.Errorf("expected directory %q to be created", dir)
+			}
+		}
+
+		// Test with organization disabled
+		os.RemoveAll("favorites")
+		os.RemoveAll("liked")
+		os.RemoveAll("custom collection")
+
+		err = createCollectionDirectories(videoEntries, false)
+		if err != nil {
+			t.Errorf("createCollectionDirectories failed: %v", err)
+		}
+
+		// Check that no directories were created
+		for _, dir := range expectedDirs {
+			if _, err := os.Stat(dir); !os.IsNotExist(err) {
+				t.Errorf("directory %q should not be created when organization is disabled", dir)
+			}
+		}
+	})
+
+	// Test writeFavoriteVideosToFile with collection organization
+	t.Run("write_videos_with_collection_organization", func(t *testing.T) {
+		// Create a temporary directory for testing
+		tmpDir, err := os.MkdirTemp("", "collection_write_test_*")
+		if err != nil {
+			t.Fatalf("failed to create temp dir: %v", err)
+		}
+		defer os.RemoveAll(tmpDir)
+
+		// Change to temp directory
+		originalDir, _ := os.Getwd()
+		defer os.Chdir(originalDir)
+		os.Chdir(tmpDir)
+
+		videoEntries := []VideoEntry{
+			{Link: "https://fav1.com", Collection: "favorites"},
+			{Link: "https://fav2.com", Collection: "favorites"},
+			{Link: "https://liked1.com", Collection: "liked"},
+			{Link: "https://liked2.com", Collection: "liked"},
+		}
+
+		// Test with collection organization enabled
+		err = writeFavoriteVideosToFile(videoEntries, "videos.txt", true)
+		if err != nil {
+			t.Errorf("writeFavoriteVideosToFile with organization failed: %v", err)
+		}
+
+		// Check if collection directories and files were created
+		favoritesFile := filepath.Join("favorites", "videos.txt")
+		likedFile := filepath.Join("liked", "videos.txt")
+
+		if _, err := os.Stat(favoritesFile); os.IsNotExist(err) {
+			t.Errorf("expected favorites file %q to be created", favoritesFile)
+		}
+
+		if _, err := os.Stat(likedFile); os.IsNotExist(err) {
+			t.Errorf("expected liked file %q to be created", likedFile)
+		}
+
+		// Verify content of favorites file
+		favContent, err := os.ReadFile(favoritesFile)
+		if err != nil {
+			t.Errorf("failed to read favorites file: %v", err)
+		}
+		favLines := strings.Split(strings.TrimSpace(string(favContent)), "\n")
+		if len(favLines) != 2 {
+			t.Errorf("expected 2 lines in favorites file, got %d", len(favLines))
+		}
+		if favLines[0] != "https://fav1.com" || favLines[1] != "https://fav2.com" {
+			t.Errorf("favorites file content incorrect: %v", favLines)
+		}
+
+		// Verify content of liked file
+		likedContent, err := os.ReadFile(likedFile)
+		if err != nil {
+			t.Errorf("failed to read liked file: %v", err)
+		}
+		likedLines := strings.Split(strings.TrimSpace(string(likedContent)), "\n")
+		if len(likedLines) != 2 {
+			t.Errorf("expected 2 lines in liked file, got %d", len(likedLines))
+		}
+		if likedLines[0] != "https://liked1.com" || likedLines[1] != "https://liked2.com" {
+			t.Errorf("liked file content incorrect: %v", likedLines)
+		}
+	})
+}
+
+// TestParseFlags tests the new CLI flag parsing functionality
+func TestParseFlags(t *testing.T) {
+	// Save original command line args
+	originalArgs := os.Args
+	defer func() { os.Args = originalArgs }()
+
+	tests := []struct {
+		name                 string
+		args                 []string
+		expectedJSONFile     string
+		expectedOrganization bool
+	}{
+		{
+			name:                 "default_settings",
+			args:                 []string{"program"},
+			expectedJSONFile:     "user_data_tiktok.json",
+			expectedOrganization: true,
+		},
+		{
+			name:                 "flat_structure_flag",
+			args:                 []string{"program", "--flat-structure"},
+			expectedJSONFile:     "user_data_tiktok.json",
+			expectedOrganization: false,
+		},
+		{
+			name:                 "custom_json_file",
+			args:                 []string{"program", "custom_data.json"},
+			expectedJSONFile:     "custom_data.json",
+			expectedOrganization: true,
+		},
+		{
+			name:                 "flat_structure_with_custom_file",
+			args:                 []string{"program", "--flat-structure", "custom_data.json"},
+			expectedJSONFile:     "custom_data.json",
+			expectedOrganization: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Set up command line arguments
+			os.Args = tt.args
+
+			// Reset flag package state
+			flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+
+			config := parseFlags()
+
+			if config.JSONFile != tt.expectedJSONFile {
+				t.Errorf("expected JSONFile %q, got %q", tt.expectedJSONFile, config.JSONFile)
+			}
+
+			if config.OrganizeByCollection != tt.expectedOrganization {
+				t.Errorf("expected OrganizeByCollection %v, got %v", tt.expectedOrganization, config.OrganizeByCollection)
+			}
+		})
+	}
 }
