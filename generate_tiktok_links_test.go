@@ -1672,3 +1672,451 @@ func TestParseFlags(t *testing.T) {
 		})
 	}
 }
+
+// TestIndexOnlyMode tests the --index-only workflow that regenerates indexes without downloading
+func TestIndexOnlyMode(t *testing.T) {
+	t.Run("index-only with collection organization", func(t *testing.T) {
+		// Create temp directory
+		tmpDir, err := os.MkdirTemp("", "index_only_test_*")
+		if err != nil {
+			t.Fatalf("failed to create temp dir: %v", err)
+		}
+		defer func() { _ = os.RemoveAll(tmpDir) }()
+
+		oldCwd, _ := os.Getwd()
+		defer func() { _ = os.Chdir(oldCwd) }()
+		_ = os.Chdir(tmpDir)
+
+		// Create collections directory structure
+		_ = os.Mkdir("favorites", 0755)
+
+		// Create test JSON file
+		jsonContent := `{
+			"Likes and Favorites": {
+				"Favorite Videos": {
+					"FavoriteVideoList": [
+						{"Link": "https://www.tiktok.com/@user/video/7600559584901647646", "Date": "2026-01-29"}
+					]
+				}
+			}
+		}`
+		jsonFile := "user_data_tiktok.json"
+		if err := os.WriteFile(jsonFile, []byte(jsonContent), 0644); err != nil {
+			t.Fatalf("failed to write test JSON: %v", err)
+		}
+
+		// Create mock .info.json file in favorites directory
+		infoJSON := `{
+			"id": "7600559584901647646",
+			"title": "Test Video",
+			"uploader": "TestUser",
+			"uploader_id": "testuser123",
+			"upload_date": "20260129",
+			"description": "Test description",
+			"duration": 45,
+			"view_count": 1500000,
+			"like_count": 50000,
+			"thumbnail": "https://example.com/thumb.jpg",
+			"filename": "20260129_7600559584901647646_Test_Video.mp4"
+		}`
+		infoPath := filepath.Join("favorites", "20260129_7600559584901647646_Test_Video.info.json")
+		if err := os.WriteFile(infoPath, []byte(infoJSON), 0644); err != nil {
+			t.Fatalf("failed to write info.json: %v", err)
+		}
+
+		// Parse video entries
+		videoEntries, err := parseFavoriteVideosFromFile(jsonFile, false)
+		if err != nil {
+			t.Fatalf("parseFavoriteVideosFromFile failed: %v", err)
+		}
+
+		// Simulate --index-only mode: regenerate indexes for each collection
+		collections := make(map[string]bool)
+		for _, entry := range videoEntries {
+			collections[sanitizeCollectionName(entry.Collection)] = true
+		}
+
+		for collection := range collections {
+			collectionEntries := getEntriesForCollection(videoEntries, collection)
+			if err := generateCollectionIndex(collection, collectionEntries); err != nil {
+				t.Fatalf("generateCollectionIndex failed: %v", err)
+			}
+		}
+
+		// Verify index files were created
+		indexJSONPath := filepath.Join("favorites", "index.json")
+		if _, err := os.Stat(indexJSONPath); os.IsNotExist(err) {
+			t.Error("index.json was not created in favorites directory")
+		}
+
+		indexHTMLPath := filepath.Join("favorites", "index.html")
+		if _, err := os.Stat(indexHTMLPath); os.IsNotExist(err) {
+			t.Error("index.html was not created in favorites directory")
+		}
+
+		// Verify index content
+		indexData, err := os.ReadFile(indexJSONPath)
+		if err != nil {
+			t.Fatalf("failed to read index.json: %v", err)
+		}
+
+		var index CollectionIndex
+		if err := json.Unmarshal(indexData, &index); err != nil {
+			t.Fatalf("failed to parse index.json: %v", err)
+		}
+
+		if index.Downloaded != 1 {
+			t.Errorf("expected 1 downloaded video, got %d", index.Downloaded)
+		}
+		if index.Failed != 0 {
+			t.Errorf("expected 0 failed videos, got %d", index.Failed)
+		}
+	})
+
+	t.Run("index-only with flat structure", func(t *testing.T) {
+		tmpDir, err := os.MkdirTemp("", "index_only_flat_*")
+		if err != nil {
+			t.Fatalf("failed to create temp dir: %v", err)
+		}
+		defer func() { _ = os.RemoveAll(tmpDir) }()
+
+		oldCwd, _ := os.Getwd()
+		defer func() { _ = os.Chdir(oldCwd) }()
+		_ = os.Chdir(tmpDir)
+
+		// Create test JSON file
+		jsonContent := `{
+			"Likes and Favorites": {
+				"Favorite Videos": {
+					"FavoriteVideoList": [
+						{"Link": "https://www.tiktok.com/@user/video/1234567890"}
+					]
+				}
+			}
+		}`
+		jsonFile := "user_data_tiktok.json"
+		if err := os.WriteFile(jsonFile, []byte(jsonContent), 0644); err != nil {
+			t.Fatalf("failed to write test JSON: %v", err)
+		}
+
+		// Create mock .info.json file in current directory (flat structure)
+		infoJSON := `{
+			"id": "1234567890",
+			"title": "Flat Structure Video",
+			"uploader": "FlatUser",
+			"filename": "20260129_1234567890_Flat_Video.mp4"
+		}`
+		if err := os.WriteFile("20260129_1234567890_Flat_Video.info.json", []byte(infoJSON), 0644); err != nil {
+			t.Fatalf("failed to write info.json: %v", err)
+		}
+
+		// Parse and generate index for flat structure
+		videoEntries, err := parseFavoriteVideosFromFile(jsonFile, false)
+		if err != nil {
+			t.Fatalf("parseFavoriteVideosFromFile failed: %v", err)
+		}
+
+		dir, err := filepath.Abs(".")
+		if err != nil {
+			dir = "."
+		}
+
+		if err := generateCollectionIndex(dir, videoEntries); err != nil {
+			t.Fatalf("generateCollectionIndex failed: %v", err)
+		}
+
+		// Verify files created in current directory
+		if _, err := os.Stat("index.json"); os.IsNotExist(err) {
+			t.Error("index.json was not created in current directory")
+		}
+		if _, err := os.Stat("index.html"); os.IsNotExist(err) {
+			t.Error("index.html was not created in current directory")
+		}
+	})
+
+	t.Run("index-only with no existing info files", func(t *testing.T) {
+		tmpDir, err := os.MkdirTemp("", "index_only_empty_*")
+		if err != nil {
+			t.Fatalf("failed to create temp dir: %v", err)
+		}
+		defer func() { _ = os.RemoveAll(tmpDir) }()
+
+		oldCwd, _ := os.Getwd()
+		defer func() { _ = os.Chdir(oldCwd) }()
+		_ = os.Chdir(tmpDir)
+
+		// Create collections directory
+		_ = os.Mkdir("favorites", 0755)
+
+		// Create test JSON file
+		jsonContent := `{
+			"Likes and Favorites": {
+				"Favorite Videos": {
+					"FavoriteVideoList": [
+						{"Link": "https://www.tiktok.com/@user/video/9999999999"}
+					]
+				}
+			}
+		}`
+		jsonFile := "user_data_tiktok.json"
+		if err := os.WriteFile(jsonFile, []byte(jsonContent), 0644); err != nil {
+			t.Fatalf("failed to write test JSON: %v", err)
+		}
+
+		// Don't create any .info.json files - simulate no downloads yet
+		videoEntries, err := parseFavoriteVideosFromFile(jsonFile, false)
+		if err != nil {
+			t.Fatalf("parseFavoriteVideosFromFile failed: %v", err)
+		}
+
+		collectionEntries := getEntriesForCollection(videoEntries, "favorites")
+		if err := generateCollectionIndex("favorites", collectionEntries); err != nil {
+			t.Fatalf("generateCollectionIndex failed: %v", err)
+		}
+
+		// Verify index shows all videos as failed
+		indexData, err := os.ReadFile(filepath.Join("favorites", "index.json"))
+		if err != nil {
+			t.Fatalf("failed to read index.json: %v", err)
+		}
+
+		var index CollectionIndex
+		if err := json.Unmarshal(indexData, &index); err != nil {
+			t.Fatalf("failed to parse index.json: %v", err)
+		}
+
+		if index.Downloaded != 0 {
+			t.Errorf("expected 0 downloaded videos, got %d", index.Downloaded)
+		}
+		if index.Failed != 1 {
+			t.Errorf("expected 1 failed video, got %d", index.Failed)
+		}
+	})
+}
+
+// TestWriteJSONIndexErrors tests error handling in writeJSONIndex
+func TestWriteJSONIndexErrors(t *testing.T) {
+	t.Run("marshal error with invalid data", func(t *testing.T) {
+		// Create temp directory
+		tmpDir, err := os.MkdirTemp("", "json_error_test_*")
+		if err != nil {
+			t.Fatalf("failed to create temp dir: %v", err)
+		}
+		defer func() { _ = os.RemoveAll(tmpDir) }()
+
+		// Create an index with data that will marshal successfully
+		// (JSON marshaling in Go is very permissive, so we test the happy path)
+		index := &CollectionIndex{
+			Name:        "test",
+			GeneratedAt: "2026-01-29",
+			TotalVideos: 1,
+			Videos: []VideoEntry{
+				{
+					Link:  "https://test.com",
+					Title: "Test",
+				},
+			},
+		}
+
+		err = writeJSONIndex(tmpDir, index)
+		if err != nil {
+			t.Errorf("expected no error, got %v", err)
+		}
+
+		// Verify file was created
+		if _, err := os.Stat(filepath.Join(tmpDir, "index.json")); os.IsNotExist(err) {
+			t.Error("index.json was not created")
+		}
+	})
+
+	t.Run("write error with invalid directory", func(t *testing.T) {
+		// Try to write to a non-existent directory
+		index := &CollectionIndex{
+			Name:   "test",
+			Videos: []VideoEntry{},
+		}
+
+		err := writeJSONIndex("/nonexistent/directory/path", index)
+		if err == nil {
+			t.Error("expected error when writing to invalid directory, got nil")
+		}
+	})
+
+	t.Run("write error with read-only directory", func(t *testing.T) {
+		// Skip on Windows where read-only directory permissions work differently
+		if strings.Contains(strings.ToLower(os.Getenv("OS")), "windows") {
+			t.Skip("Skipping read-only directory test on Windows")
+		}
+
+		// Create temp directory
+		tmpDir, err := os.MkdirTemp("", "readonly_test_*")
+		if err != nil {
+			t.Fatalf("failed to create temp dir: %v", err)
+		}
+		defer func() {
+			// Restore write permissions before cleanup
+			_ = os.Chmod(tmpDir, 0755)
+			_ = os.RemoveAll(tmpDir)
+		}()
+
+		// Make directory read-only
+		if err := os.Chmod(tmpDir, 0555); err != nil {
+			t.Skipf("Cannot set read-only permissions on this platform: %v", err)
+		}
+
+		index := &CollectionIndex{
+			Name:   "test",
+			Videos: []VideoEntry{},
+		}
+
+		err = writeJSONIndex(tmpDir, index)
+		if err == nil {
+			t.Error("expected error when writing to read-only directory, got nil")
+		}
+	})
+}
+
+// TestWriteHTMLIndexErrors tests error handling in writeHTMLIndex
+func TestWriteHTMLIndexErrors(t *testing.T) {
+	t.Run("template execution with valid data", func(t *testing.T) {
+		tmpDir, err := os.MkdirTemp("", "html_test_*")
+		if err != nil {
+			t.Fatalf("failed to create temp dir: %v", err)
+		}
+		defer func() { _ = os.RemoveAll(tmpDir) }()
+
+		index := &CollectionIndex{
+			Name:        "test",
+			GeneratedAt: "2026-01-29",
+			TotalVideos: 1,
+			Downloaded:  1,
+			Videos: []VideoEntry{
+				{
+					VideoID:    "123",
+					Title:      "Test Video",
+					Downloaded: true,
+				},
+			},
+		}
+
+		err = writeHTMLIndex(tmpDir, index)
+		if err != nil {
+			t.Errorf("expected no error, got %v", err)
+		}
+	})
+
+	t.Run("write error with invalid directory", func(t *testing.T) {
+		index := &CollectionIndex{
+			Name:   "test",
+			Videos: []VideoEntry{},
+		}
+
+		err := writeHTMLIndex("/nonexistent/directory/path", index)
+		if err == nil {
+			t.Error("expected error when writing to invalid directory, got nil")
+		}
+	})
+
+	t.Run("template execution with special characters", func(t *testing.T) {
+		tmpDir, err := os.MkdirTemp("", "html_special_*")
+		if err != nil {
+			t.Fatalf("failed to create temp dir: %v", err)
+		}
+		defer func() { _ = os.RemoveAll(tmpDir) }()
+
+		// Test with special HTML characters (should be auto-escaped by Go templates)
+		index := &CollectionIndex{
+			Name:        "test <script>alert('xss')</script>",
+			GeneratedAt: "2026-01-29",
+			Videos: []VideoEntry{
+				{
+					Title:       "<script>alert('xss')</script>",
+					Description: "Test & special chars < > \" '",
+					Creator:     "User<tag>",
+				},
+			},
+		}
+
+		err = writeHTMLIndex(tmpDir, index)
+		if err != nil {
+			t.Errorf("expected no error with special characters, got %v", err)
+		}
+
+		// Verify HTML was created and special chars are escaped
+		content, err := os.ReadFile(filepath.Join(tmpDir, "index.html"))
+		if err != nil {
+			t.Fatalf("failed to read HTML: %v", err)
+		}
+
+		htmlStr := string(content)
+		// Go templates auto-escape, so script tags should be escaped
+		if strings.Contains(htmlStr, "<script>alert") && !strings.Contains(htmlStr, "&lt;script&gt;") {
+			t.Error("HTML special characters were not properly escaped")
+		}
+	})
+}
+
+// TestVideoIDValidation tests that missing video IDs are properly logged and handled
+func TestVideoIDValidation(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "video_id_validation_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	// Create entries with invalid URLs (no video ID)
+	entries := []VideoEntry{
+		{
+			Link:       "https://www.tiktok.com/@user/profile", // Invalid - no video ID
+			Collection: "favorites",
+		},
+		{
+			Link:       "https://invalid-url", // Invalid - no video ID
+			Collection: "favorites",
+		},
+		{
+			Link:       "https://www.tiktok.com/@user/video/1234567890", // Valid
+			Collection: "favorites",
+		},
+	}
+
+	// Generate index - should warn about invalid URLs
+	err = generateCollectionIndex(tmpDir, entries)
+	if err != nil {
+		t.Fatalf("generateCollectionIndex failed: %v", err)
+	}
+
+	// Read and verify index
+	indexData, err := os.ReadFile(filepath.Join(tmpDir, "index.json"))
+	if err != nil {
+		t.Fatalf("failed to read index.json: %v", err)
+	}
+
+	var index CollectionIndex
+	if err := json.Unmarshal(indexData, &index); err != nil {
+		t.Fatalf("failed to parse index.json: %v", err)
+	}
+
+	// Check that invalid URLs are marked as failed with appropriate error
+	invalidCount := 0
+	for _, v := range index.Videos {
+		if v.VideoID == "" {
+			invalidCount++
+			if v.Downloaded {
+				t.Error("expected video with no ID to be marked as not downloaded")
+			}
+			if !strings.Contains(v.DownloadError, "Invalid URL format") {
+				t.Errorf("expected error message about invalid URL, got: %s", v.DownloadError)
+			}
+		}
+	}
+
+	if invalidCount != 2 {
+		t.Errorf("expected 2 videos with invalid IDs, got %d", invalidCount)
+	}
+
+	// Check counts
+	if index.Failed != 3 {
+		t.Errorf("expected 3 failed videos (2 invalid URLs + 1 missing metadata), got %d", index.Failed)
+	}
+}

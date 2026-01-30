@@ -475,6 +475,14 @@ func generateCollectionIndex(collectionDir string, entries []VideoEntry) error {
 		videoID := extractVideoID(enrichedEntries[i].Link)
 		enrichedEntries[i].VideoID = videoID
 
+		// Warn if video ID could not be extracted from URL
+		if videoID == "" {
+			fmt.Printf("[!] Warning: Could not extract video ID from URL: %s\n", enrichedEntries[i].Link)
+			enrichedEntries[i].Downloaded = false
+			enrichedEntries[i].DownloadError = "Invalid URL format - could not extract video ID"
+			continue
+		}
+
 		if info, ok := infoMap[videoID]; ok {
 			enrichedEntries[i].Title = info.Title
 			enrichedEntries[i].Creator = info.Uploader
