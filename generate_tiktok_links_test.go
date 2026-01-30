@@ -12,6 +12,88 @@ import (
 	"testing"
 )
 
+// Test utility helpers to reduce code duplication
+
+// setupTestDir creates a temporary directory for testing and returns a cleanup function
+func setupTestDir(t *testing.T) (string, func()) {
+	t.Helper()
+	tmpDir, err := os.MkdirTemp("", "test_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	return tmpDir, func() { _ = os.RemoveAll(tmpDir) }
+}
+
+// setupTestDirWithChdir creates a temporary directory, changes to it, and returns cleanup function
+func setupTestDirWithChdir(t *testing.T) (string, func()) {
+	t.Helper()
+	tmpDir, cleanup := setupTestDir(t)
+
+	oldCwd, err := os.Getwd()
+	if err != nil {
+		cleanup()
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+
+	if err := os.Chdir(tmpDir); err != nil {
+		cleanup()
+		t.Fatalf("failed to chdir: %v", err)
+	}
+
+	return tmpDir, func() {
+		_ = os.Chdir(oldCwd)
+		cleanup()
+	}
+}
+
+// createMockInfoJSON creates a mock .info.json file for testing
+func createMockInfoJSON(t *testing.T, dir, videoID, title, filename string) {
+	t.Helper()
+	infoJSON := fmt.Sprintf(`{
+		"id": "%s",
+		"title": "%s",
+		"uploader": "TestUser",
+		"uploader_id": "testuser123",
+		"upload_date": "20260129",
+		"description": "Test description",
+		"duration": 45,
+		"view_count": 1500000,
+		"like_count": 50000,
+		"thumbnail": "https://example.com/thumb.jpg",
+		"filename": "%s"
+	}`, videoID, title, filename)
+
+	infoPath := filepath.Join(dir, filename+".info.json")
+	if err := os.WriteFile(infoPath, []byte(infoJSON), 0644); err != nil {
+		t.Fatalf("failed to write info.json: %v", err)
+	}
+}
+
+// createMockVideoFile creates a mock video file for testing
+func createMockVideoFile(t *testing.T, dir, filename string) {
+	t.Helper()
+	videoPath := filepath.Join(dir, filename)
+	if err := os.WriteFile(videoPath, []byte("fake video data"), 0644); err != nil {
+		t.Fatalf("failed to write video file: %v", err)
+	}
+}
+
+// readCollectionIndex reads and parses a collection index.json file
+func readCollectionIndex(t *testing.T, dir string) *CollectionIndex {
+	t.Helper()
+	indexPath := filepath.Join(dir, "index.json")
+	data, err := os.ReadFile(indexPath)
+	if err != nil {
+		t.Fatalf("failed to read index.json: %v", err)
+	}
+
+	var index CollectionIndex
+	if err := json.Unmarshal(data, &index); err != nil {
+		t.Fatalf("failed to parse index.json: %v", err)
+	}
+	return &index
+}
+
 // TestIsRunningInPowershell checks if isRunningInPowershell returns
 // true/false based on the environment variable. We manipulate the environment.
 func TestIsRunningInPowershell(t *testing.T) {
@@ -1311,6 +1393,12 @@ func TestGenerateCollectionIndex(t *testing.T) {
 			t.Fatalf("failed to write info.json: %v", err)
 		}
 
+		// Create the actual video file (required for download verification)
+		videoPath := filepath.Join(tmpDir, "20260129_7600559584901647646_Test_Video.mp4")
+		if err := os.WriteFile(videoPath, []byte("fake video data"), 0644); err != nil {
+			t.Fatalf("failed to write video file: %v", err)
+		}
+
 		// Create video entries
 		entries := []VideoEntry{
 			{
@@ -1724,6 +1812,12 @@ func TestIndexOnlyMode(t *testing.T) {
 			t.Fatalf("failed to write info.json: %v", err)
 		}
 
+		// Create the actual video file
+		videoPath := filepath.Join("favorites", "20260129_7600559584901647646_Test_Video.mp4")
+		if err := os.WriteFile(videoPath, []byte("fake video data"), 0644); err != nil {
+			t.Fatalf("failed to write video file: %v", err)
+		}
+
 		// Parse video entries
 		videoEntries, err := parseFavoriteVideosFromFile(jsonFile, false)
 		if err != nil {
@@ -2119,4 +2213,460 @@ func TestVideoIDValidation(t *testing.T) {
 	if index.Failed != 3 {
 		t.Errorf("expected 3 failed videos (2 invalid URLs + 1 missing metadata), got %d", index.Failed)
 	}
+}
+
+// TestThumbnailDetection tests thumbnail file detection with various extensions and edge cases
+func TestThumbnailDetection(t *testing.T) {
+	t.Run("detects jpg thumbnail", func(t *testing.T) {
+		tmpDir, err := os.MkdirTemp("", "thumb_jpg_*")
+		if err != nil {
+			t.Fatalf("failed to create temp dir: %v", err)
+		}
+		defer func() { _ = os.RemoveAll(tmpDir) }()
+
+		// Create .info.json
+		infoJSON := `{
+			"id": "123456",
+			"title": "Test",
+			"filename": "20260129_123456_Test.mp4"
+		}`
+		if err := os.WriteFile(filepath.Join(tmpDir, "20260129_123456_Test.info.json"), []byte(infoJSON), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		// Create .jpg thumbnail
+		if err := os.WriteFile(filepath.Join(tmpDir, "20260129_123456_Test.jpg"), []byte("fake image"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		// Create video file
+		if err := os.WriteFile(filepath.Join(tmpDir, "20260129_123456_Test.mp4"), []byte("fake video"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		entries := []VideoEntry{{Link: "https://www.tiktok.com/@user/video/123456"}}
+		if err := generateCollectionIndex(tmpDir, entries); err != nil {
+			t.Fatal(err)
+		}
+
+		indexData, _ := os.ReadFile(filepath.Join(tmpDir, "index.json"))
+		var index CollectionIndex
+		_ = json.Unmarshal(indexData, &index)
+
+		if index.Videos[0].ThumbnailFile != "20260129_123456_Test.jpg" {
+			t.Errorf("expected .jpg thumbnail, got %q", index.Videos[0].ThumbnailFile)
+		}
+	})
+
+	t.Run("prioritizes extensions in order", func(t *testing.T) {
+		tmpDir, err := os.MkdirTemp("", "thumb_priority_*")
+		if err != nil {
+			t.Fatalf("failed to create temp dir: %v", err)
+		}
+		defer func() { _ = os.RemoveAll(tmpDir) }()
+
+		infoJSON := `{
+			"id": "789012",
+			"title": "Test",
+			"filename": "20260129_789012_Test.mp4"
+		}`
+		if err := os.WriteFile(filepath.Join(tmpDir, "20260129_789012_Test.info.json"), []byte(infoJSON), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		// Create multiple thumbnail formats
+		_ = os.WriteFile(filepath.Join(tmpDir, "20260129_789012_Test.jpg"), []byte("jpg"), 0644)
+		_ = os.WriteFile(filepath.Join(tmpDir, "20260129_789012_Test.webp"), []byte("webp"), 0644)
+		_ = os.WriteFile(filepath.Join(tmpDir, "20260129_789012_Test.png"), []byte("png"), 0644)
+		_ = os.WriteFile(filepath.Join(tmpDir, "20260129_789012_Test.mp4"), []byte("video"), 0644)
+
+		entries := []VideoEntry{{Link: "https://www.tiktok.com/@user/video/789012"}}
+		if err := generateCollectionIndex(tmpDir, entries); err != nil {
+			t.Fatal(err)
+		}
+
+		indexData, _ := os.ReadFile(filepath.Join(tmpDir, "index.json"))
+		var index CollectionIndex
+		_ = json.Unmarshal(indexData, &index)
+
+		// Should pick .jpg first (first in priority list)
+		if index.Videos[0].ThumbnailFile != "20260129_789012_Test.jpg" {
+			t.Errorf("expected .jpg to be prioritized, got %q", index.Videos[0].ThumbnailFile)
+		}
+	})
+
+	t.Run("handles uppercase extensions", func(t *testing.T) {
+		tmpDir, err := os.MkdirTemp("", "thumb_upper_*")
+		if err != nil {
+			t.Fatalf("failed to create temp dir: %v", err)
+		}
+		defer func() { _ = os.RemoveAll(tmpDir) }()
+
+		infoJSON := `{
+			"id": "345678",
+			"title": "Test",
+			"filename": "20260129_345678_Test.mp4"
+		}`
+		if err := os.WriteFile(filepath.Join(tmpDir, "20260129_345678_Test.info.json"), []byte(infoJSON), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		// Create uppercase extension thumbnail (note: on case-insensitive file systems like Windows,
+		// this may be found as lowercase, which is acceptable behavior)
+		_ = os.WriteFile(filepath.Join(tmpDir, "20260129_345678_Test.JPG"), []byte("image"), 0644)
+		_ = os.WriteFile(filepath.Join(tmpDir, "20260129_345678_Test.mp4"), []byte("video"), 0644)
+
+		entries := []VideoEntry{{Link: "https://www.tiktok.com/@user/video/345678"}}
+		if err := generateCollectionIndex(tmpDir, entries); err != nil {
+			t.Fatal(err)
+		}
+
+		indexData, _ := os.ReadFile(filepath.Join(tmpDir, "index.json"))
+		var index CollectionIndex
+		_ = json.Unmarshal(indexData, &index)
+
+		// Accept either .JPG or .jpg depending on file system case sensitivity
+		thumbFile := index.Videos[0].ThumbnailFile
+		if thumbFile != "20260129_345678_Test.JPG" && thumbFile != "20260129_345678_Test.jpg" {
+			t.Errorf("expected .JPG or .jpg thumbnail, got %q", thumbFile)
+		}
+	})
+
+	t.Run("handles missing thumbnail", func(t *testing.T) {
+		tmpDir, err := os.MkdirTemp("", "thumb_missing_*")
+		if err != nil {
+			t.Fatalf("failed to create temp dir: %v", err)
+		}
+		defer func() { _ = os.RemoveAll(tmpDir) }()
+
+		infoJSON := `{
+			"id": "999888",
+			"title": "Test",
+			"filename": "20260129_999888_Test.mp4"
+		}`
+		if err := os.WriteFile(filepath.Join(tmpDir, "20260129_999888_Test.info.json"), []byte(infoJSON), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		// Create video but NO thumbnail
+		_ = os.WriteFile(filepath.Join(tmpDir, "20260129_999888_Test.mp4"), []byte("video"), 0644)
+
+		entries := []VideoEntry{{Link: "https://www.tiktok.com/@user/video/999888"}}
+		if err := generateCollectionIndex(tmpDir, entries); err != nil {
+			t.Fatal(err)
+		}
+
+		indexData, _ := os.ReadFile(filepath.Join(tmpDir, "index.json"))
+		var index CollectionIndex
+		_ = json.Unmarshal(indexData, &index)
+
+		if index.Videos[0].ThumbnailFile != "" {
+			t.Errorf("expected no thumbnail, got %q", index.Videos[0].ThumbnailFile)
+		}
+	})
+}
+
+// TestPartialDownloadHandling tests detection of partial downloads and missing video files
+func TestPartialDownloadHandling(t *testing.T) {
+	t.Run("detects partial download with .part file", func(t *testing.T) {
+		tmpDir, err := os.MkdirTemp("", "partial_*")
+		if err != nil {
+			t.Fatalf("failed to create temp dir: %v", err)
+		}
+		defer func() { _ = os.RemoveAll(tmpDir) }()
+
+		infoJSON := `{
+			"id": "111222",
+			"title": "Partial Download",
+			"filename": "20260129_111222_Partial.mp4"
+		}`
+		if err := os.WriteFile(filepath.Join(tmpDir, "20260129_111222_Partial.info.json"), []byte(infoJSON), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		// Create .part file (partial download)
+		if err := os.WriteFile(filepath.Join(tmpDir, "20260129_111222_Partial.mp4.part"), []byte("partial"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		entries := []VideoEntry{{Link: "https://www.tiktok.com/@user/video/111222"}}
+		if err := generateCollectionIndex(tmpDir, entries); err != nil {
+			t.Fatal(err)
+		}
+
+		indexData, _ := os.ReadFile(filepath.Join(tmpDir, "index.json"))
+		var index CollectionIndex
+		_ = json.Unmarshal(indexData, &index)
+
+		if index.Videos[0].Downloaded {
+			t.Error("expected video with .part file to be marked as not downloaded")
+		}
+		if !strings.Contains(index.Videos[0].DownloadError, "incomplete") {
+			t.Errorf("expected 'incomplete' error message, got: %s", index.Videos[0].DownloadError)
+		}
+		if index.Failed != 1 {
+			t.Errorf("expected 1 failed video, got %d", index.Failed)
+		}
+	})
+
+	t.Run("detects missing video file with metadata only", func(t *testing.T) {
+		tmpDir, err := os.MkdirTemp("", "metadata_only_*")
+		if err != nil {
+			t.Fatalf("failed to create temp dir: %v", err)
+		}
+		defer func() { _ = os.RemoveAll(tmpDir) }()
+
+		infoJSON := `{
+			"id": "333444",
+			"title": "Metadata Only",
+			"filename": "20260129_333444_Metadata.mp4"
+		}`
+		if err := os.WriteFile(filepath.Join(tmpDir, "20260129_333444_Metadata.info.json"), []byte(infoJSON), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		// Don't create the video file - only .info.json exists
+		entries := []VideoEntry{{Link: "https://www.tiktok.com/@user/video/333444"}}
+		if err := generateCollectionIndex(tmpDir, entries); err != nil {
+			t.Fatal(err)
+		}
+
+		indexData, _ := os.ReadFile(filepath.Join(tmpDir, "index.json"))
+		var index CollectionIndex
+		_ = json.Unmarshal(indexData, &index)
+
+		if index.Videos[0].Downloaded {
+			t.Error("expected video with missing file to be marked as not downloaded")
+		}
+		if !strings.Contains(index.Videos[0].DownloadError, "missing") {
+			t.Errorf("expected 'missing' error message, got: %s", index.Videos[0].DownloadError)
+		}
+	})
+
+	t.Run("detects incomplete metadata", func(t *testing.T) {
+		tmpDir, err := os.MkdirTemp("", "incomplete_meta_*")
+		if err != nil {
+			t.Fatalf("failed to create temp dir: %v", err)
+		}
+		defer func() { _ = os.RemoveAll(tmpDir) }()
+
+		// Info without filename field
+		infoJSON := `{
+			"id": "555666",
+			"title": "No Filename"
+		}`
+		if err := os.WriteFile(filepath.Join(tmpDir, "20260129_555666_Test.info.json"), []byte(infoJSON), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		entries := []VideoEntry{{Link: "https://www.tiktok.com/@user/video/555666"}}
+		if err := generateCollectionIndex(tmpDir, entries); err != nil {
+			t.Fatal(err)
+		}
+
+		indexData, _ := os.ReadFile(filepath.Join(tmpDir, "index.json"))
+		var index CollectionIndex
+		_ = json.Unmarshal(indexData, &index)
+
+		if index.Videos[0].Downloaded {
+			t.Error("expected video with incomplete metadata to be marked as not downloaded")
+		}
+		if !strings.Contains(index.Videos[0].DownloadError, "incomplete") {
+			t.Errorf("expected 'incomplete' error message, got: %s", index.Videos[0].DownloadError)
+		}
+	})
+
+	t.Run("successful download with all files present", func(t *testing.T) {
+		tmpDir, err := os.MkdirTemp("", "success_*")
+		if err != nil {
+			t.Fatalf("failed to create temp dir: %v", err)
+		}
+		defer func() { _ = os.RemoveAll(tmpDir) }()
+
+		infoJSON := `{
+			"id": "777888",
+			"title": "Complete Download",
+			"filename": "20260129_777888_Complete.mp4"
+		}`
+		if err := os.WriteFile(filepath.Join(tmpDir, "20260129_777888_Complete.info.json"), []byte(infoJSON), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		// Create complete video file
+		if err := os.WriteFile(filepath.Join(tmpDir, "20260129_777888_Complete.mp4"), []byte("complete video"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		entries := []VideoEntry{{Link: "https://www.tiktok.com/@user/video/777888"}}
+		if err := generateCollectionIndex(tmpDir, entries); err != nil {
+			t.Fatal(err)
+		}
+
+		indexData, _ := os.ReadFile(filepath.Join(tmpDir, "index.json"))
+		var index CollectionIndex
+		_ = json.Unmarshal(indexData, &index)
+
+		if !index.Videos[0].Downloaded {
+			t.Error("expected complete video to be marked as downloaded")
+		}
+		if index.Videos[0].DownloadError != "" {
+			t.Errorf("expected no error, got: %s", index.Videos[0].DownloadError)
+		}
+		if index.Downloaded != 1 {
+			t.Errorf("expected 1 downloaded video, got %d", index.Downloaded)
+		}
+	})
+}
+
+// TestSpecialCharactersInIndex tests handling of special characters in various metadata fields
+func TestSpecialCharactersInIndex(t *testing.T) {
+	t.Run("handles emoji in titles and descriptions", func(t *testing.T) {
+		tmpDir, err := os.MkdirTemp("", "emoji_test_*")
+		if err != nil {
+			t.Fatalf("failed to create temp dir: %v", err)
+		}
+		defer func() { _ = os.RemoveAll(tmpDir) }()
+
+		infoJSON := `{
+			"id": "9988776655",
+			"title": "🎉 Fun Video 🎊 Party Time! 🥳",
+			"description": "Testing emoji 😀😃😄 support",
+			"uploader": "User👨‍💻",
+			"filename": "20260129_9988776655_Fun.mp4"
+		}`
+		if err := os.WriteFile(filepath.Join(tmpDir, "20260129_9988776655_Fun.info.json"), []byte(infoJSON), 0644); err != nil {
+			t.Fatal(err)
+		}
+		_ = os.WriteFile(filepath.Join(tmpDir, "20260129_9988776655_Fun.mp4"), []byte("video"), 0644)
+
+		entries := []VideoEntry{{Link: "https://www.tiktok.com/@user/video/9988776655"}}
+		if err := generateCollectionIndex(tmpDir, entries); err != nil {
+			t.Fatal(err)
+		}
+
+		// Verify JSON can be parsed
+		indexData, _ := os.ReadFile(filepath.Join(tmpDir, "index.json"))
+		var index CollectionIndex
+		if err := json.Unmarshal(indexData, &index); err != nil {
+			t.Fatalf("failed to parse index with emoji: %v", err)
+		}
+
+		if !strings.Contains(index.Videos[0].Title, "🎉") {
+			t.Error("emoji should be preserved in JSON")
+		}
+
+		// Verify HTML can be read and contains emoji
+		htmlData, _ := os.ReadFile(filepath.Join(tmpDir, "index.html"))
+		if !strings.Contains(string(htmlData), "🎉") {
+			t.Error("emoji should be preserved in HTML")
+		}
+	})
+
+	t.Run("escapes HTML injection attempts", func(t *testing.T) {
+		tmpDir, err := os.MkdirTemp("", "xss_test_*")
+		if err != nil {
+			t.Fatalf("failed to create temp dir: %v", err)
+		}
+		defer func() { _ = os.RemoveAll(tmpDir) }()
+
+		infoJSON := `{
+			"id": "1122334455",
+			"title": "<script>alert('xss')</script><img src=x onerror=alert('xss')>",
+			"description": "<iframe src='javascript:alert(1)'>",
+			"uploader": "</title><script>alert('xss')</script>",
+			"filename": "20260129_1122334455_Test.mp4"
+		}`
+		if err := os.WriteFile(filepath.Join(tmpDir, "20260129_1122334455_Test.info.json"), []byte(infoJSON), 0644); err != nil {
+			t.Fatal(err)
+		}
+		_ = os.WriteFile(filepath.Join(tmpDir, "20260129_1122334455_Test.mp4"), []byte("video"), 0644)
+
+		entries := []VideoEntry{{Link: "https://www.tiktok.com/@user/video/1122334455"}}
+		if err := generateCollectionIndex(tmpDir, entries); err != nil {
+			t.Fatal(err)
+		}
+
+		htmlData, _ := os.ReadFile(filepath.Join(tmpDir, "index.html"))
+		htmlStr := string(htmlData)
+
+		// Verify HTML tags are escaped
+		if strings.Contains(htmlStr, "<script>alert('xss')</script>") {
+			t.Error("script tags should be escaped in HTML output")
+		}
+		if strings.Contains(htmlStr, "&lt;script&gt;") || strings.Contains(htmlStr, "&#") {
+			// Good - HTML is escaped
+		} else {
+			t.Log("Warning: HTML escaping method may have changed")
+		}
+	})
+
+	t.Run("handles very long titles and descriptions", func(t *testing.T) {
+		tmpDir, err := os.MkdirTemp("", "long_test_*")
+		if err != nil {
+			t.Fatalf("failed to create temp dir: %v", err)
+		}
+		defer func() { _ = os.RemoveAll(tmpDir) }()
+
+		longTitle := strings.Repeat("A", 5000)
+		longDesc := strings.Repeat("B", 10000)
+		infoJSON := fmt.Sprintf(`{
+			"id": "6677889900",
+			"title": "%s",
+			"description": "%s",
+			"filename": "20260129_6677889900_Test.mp4"
+		}`, longTitle, longDesc)
+		if err := os.WriteFile(filepath.Join(tmpDir, "20260129_6677889900_Test.info.json"), []byte(infoJSON), 0644); err != nil {
+			t.Fatal(err)
+		}
+		_ = os.WriteFile(filepath.Join(tmpDir, "20260129_6677889900_Test.mp4"), []byte("video"), 0644)
+
+		entries := []VideoEntry{{Link: "https://www.tiktok.com/@user/video/6677889900"}}
+		if err := generateCollectionIndex(tmpDir, entries); err != nil {
+			t.Fatalf("should handle very long strings: %v", err)
+		}
+
+		// Verify both files were created
+		if _, err := os.Stat(filepath.Join(tmpDir, "index.json")); err != nil {
+			t.Error("index.json should be created even with very long strings")
+		}
+		if _, err := os.Stat(filepath.Join(tmpDir, "index.html")); err != nil {
+			t.Error("index.html should be created even with very long strings")
+		}
+	})
+
+	t.Run("handles unicode RTL text", func(t *testing.T) {
+		tmpDir, err := os.MkdirTemp("", "rtl_test_*")
+		if err != nil {
+			t.Fatalf("failed to create temp dir: %v", err)
+		}
+		defer func() { _ = os.RemoveAll(tmpDir) }()
+
+		// Arabic and Hebrew text (right-to-left)
+		infoJSON := `{
+			"id": "2233445566",
+			"title": "مرحبا بك في تيك توك",
+			"description": "שלום עולם",
+			"uploader": "مستخدم",
+			"filename": "20260129_2233445566_Test.mp4"
+		}`
+		if err := os.WriteFile(filepath.Join(tmpDir, "20260129_2233445566_Test.info.json"), []byte(infoJSON), 0644); err != nil {
+			t.Fatal(err)
+		}
+		_ = os.WriteFile(filepath.Join(tmpDir, "20260129_2233445566_Test.mp4"), []byte("video"), 0644)
+
+		entries := []VideoEntry{{Link: "https://www.tiktok.com/@user/video/2233445566"}}
+		if err := generateCollectionIndex(tmpDir, entries); err != nil {
+			t.Fatalf("should handle RTL text: %v", err)
+		}
+
+		indexData, _ := os.ReadFile(filepath.Join(tmpDir, "index.json"))
+		var index CollectionIndex
+		if err := json.Unmarshal(indexData, &index); err != nil {
+			t.Fatalf("failed to parse index with RTL text: %v", err)
+		}
+
+		if !strings.Contains(index.Videos[0].Title, "مرحبا") {
+			t.Error("RTL text should be preserved")
+		}
+	})
 }

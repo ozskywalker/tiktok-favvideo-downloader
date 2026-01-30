@@ -400,7 +400,15 @@ func runYtdlpWithRunner(runner CommandRunner, psPrefix, outputName string, organ
 //go:embed templates/index.html
 var htmlTemplate string
 
-// getTemplateFuncs returns template helper functions
+// getTemplateFuncs returns template helper functions for HTML template rendering.
+//
+// Thread-safety: This function returns a new FuncMap on each call, so it is safe to
+// call concurrently from multiple goroutines. The returned FuncMap itself contains
+// closures that are stateless and safe for concurrent use within Go's html/template
+// package, which handles synchronization internally during template execution.
+//
+// Note: Currently, the application generates indexes sequentially, but this function
+// is designed to support concurrent index generation if needed in the future.
 func getTemplateFuncs() template.FuncMap {
 	return template.FuncMap{
 		"formatDuration": func(seconds int) string {
@@ -449,10 +457,13 @@ func writeHTMLIndex(dir string, index *CollectionIndex) error {
 // It enriches entries with metadata from yt-dlp's .info.json files and generates
 // both index.json (machine-readable) and index.html (visual browser) files.
 func generateCollectionIndex(collectionDir string, entries []VideoEntry) error {
+	collectionName := filepath.Base(collectionDir)
+	fmt.Printf("[*] Generating index for %s (%d videos)...\n", collectionName, len(entries))
+
 	// 1. Scan for .info.json files in the directory
 	infoFiles, err := filepath.Glob(filepath.Join(collectionDir, "*.info.json"))
 	if err != nil {
-		return fmt.Errorf("error scanning for info files: %v", err)
+		return fmt.Errorf("collection %q: error scanning for info files: %v", collectionName, err)
 	}
 
 	// 2. Build video ID to info map
@@ -465,6 +476,7 @@ func generateCollectionIndex(collectionDir string, entries []VideoEntry) error {
 		}
 		infoMap[info.ID] = info
 	}
+	fmt.Printf("[*] Found %d metadata files for %s\n", len(infoMap), collectionName)
 
 	// 3. Create a copy of entries to avoid mutating the input slice
 	enrichedEntries := make([]VideoEntry, len(entries))
@@ -493,16 +505,38 @@ func generateCollectionIndex(collectionDir string, entries []VideoEntry) error {
 			enrichedEntries[i].ViewCount = info.ViewCount
 			enrichedEntries[i].LikeCount = info.LikeCount
 			enrichedEntries[i].ThumbnailURL = info.Thumbnail
-			enrichedEntries[i].Downloaded = true
 
 			// Determine the local filename from the info
 			if info.Filename != "" {
 				enrichedEntries[i].LocalFilename = filepath.Base(info.Filename)
 			}
 
+			// Check if video file actually exists (not just .info.json)
+			videoPath := filepath.Join(collectionDir, enrichedEntries[i].LocalFilename)
+			partialPath := videoPath + ".part"
+
+			if _, err := os.Stat(partialPath); err == nil {
+				// Partial download exists
+				enrichedEntries[i].Downloaded = false
+				enrichedEntries[i].DownloadError = "Download incomplete (found .part file)"
+			} else if enrichedEntries[i].LocalFilename != "" {
+				if _, err := os.Stat(videoPath); err == nil {
+					// Full video file exists
+					enrichedEntries[i].Downloaded = true
+				} else {
+					// Info exists but video file is missing
+					enrichedEntries[i].Downloaded = false
+					enrichedEntries[i].DownloadError = "Video file missing (metadata only)"
+				}
+			} else {
+				// No filename in metadata
+				enrichedEntries[i].Downloaded = false
+				enrichedEntries[i].DownloadError = "Metadata incomplete (missing filename)"
+			}
+
 			// Check for thumbnail file (try common extensions)
 			baseWithoutExt := strings.TrimSuffix(info.Filename, filepath.Ext(info.Filename))
-			for _, ext := range []string{".jpg", ".webp", ".png"} {
+			for _, ext := range []string{".jpg", ".webp", ".png", ".JPG", ".WEBP", ".PNG"} {
 				thumbPath := baseWithoutExt + ext
 				if _, err := os.Stat(filepath.Join(collectionDir, filepath.Base(thumbPath))); err == nil {
 					enrichedEntries[i].ThumbnailFile = filepath.Base(thumbPath)
@@ -534,12 +568,12 @@ func generateCollectionIndex(collectionDir string, entries []VideoEntry) error {
 
 	// 5. Write JSON index
 	if err := writeJSONIndex(collectionDir, &index); err != nil {
-		return fmt.Errorf("error writing JSON index: %v", err)
+		return fmt.Errorf("collection %q: error writing JSON index: %v", collectionName, err)
 	}
 
 	// 6. Generate HTML index
 	if err := writeHTMLIndex(collectionDir, &index); err != nil {
-		return fmt.Errorf("error writing HTML index: %v", err)
+		return fmt.Errorf("collection %q: error writing HTML index: %v", collectionName, err)
 	}
 
 	return nil
