@@ -281,36 +281,49 @@ func (m *MockCommandRunner) Run(name string, args ...string) error {
 // TestRunYtdlpWithRunner tests the runYtdlp function with mocked command execution
 func TestRunYtdlpWithRunner(t *testing.T) {
 	tests := []struct {
-		name       string
-		psPrefix   string
-		outputName string
-		shouldFail bool
-		expectCmd  string
-		expectArgs []string
+		name                 string
+		psPrefix             string
+		outputName           string
+		organizeByCollection bool
+		shouldFail           bool
+		expectCmd            string
+		expectArgs           []string
 	}{
 		{
-			name:       "successful execution without powershell prefix",
-			psPrefix:   "",
-			outputName: "test_videos.txt",
-			shouldFail: false,
-			expectCmd:  "yt-dlp.exe",
-			expectArgs: []string{"-a", "test_videos.txt", "--output", "%(upload_date)s_%(uploader_id)s.%(ext)s"},
+			name:                 "successful execution without powershell prefix",
+			psPrefix:             "",
+			outputName:           "test_videos.txt",
+			organizeByCollection: false,
+			shouldFail:           false,
+			expectCmd:            "yt-dlp.exe",
+			expectArgs:           []string{"-a", "test_videos.txt", "--output", "%(upload_date)s_%(uploader_id)s.%(ext)s"},
 		},
 		{
-			name:       "successful execution with powershell prefix",
-			psPrefix:   ".\\",
-			outputName: "fav_videos.txt",
-			shouldFail: false,
-			expectCmd:  ".\\yt-dlp.exe",
-			expectArgs: []string{"-a", "fav_videos.txt", "--output", "%(upload_date)s_%(uploader_id)s.%(ext)s"},
+			name:                 "successful execution with powershell prefix",
+			psPrefix:             ".\\",
+			outputName:           "fav_videos.txt",
+			organizeByCollection: false,
+			shouldFail:           false,
+			expectCmd:            ".\\yt-dlp.exe",
+			expectArgs:           []string{"-a", "fav_videos.txt", "--output", "%(upload_date)s_%(uploader_id)s.%(ext)s"},
 		},
 		{
-			name:       "command execution failure",
-			psPrefix:   "",
-			outputName: "videos.txt",
-			shouldFail: true,
-			expectCmd:  "yt-dlp.exe",
-			expectArgs: []string{"-a", "videos.txt", "--output", "%(upload_date)s_%(uploader_id)s.%(ext)s"},
+			name:                 "command execution failure",
+			psPrefix:             "",
+			outputName:           "videos.txt",
+			organizeByCollection: false,
+			shouldFail:           true,
+			expectCmd:            "yt-dlp.exe",
+			expectArgs:           []string{"-a", "videos.txt", "--output", "%(upload_date)s_%(uploader_id)s.%(ext)s"},
+		},
+		{
+			name:                 "collection organized output goes to subdirectory",
+			psPrefix:             "",
+			outputName:           filepath.Join("favorites", "fav_videos.txt"),
+			organizeByCollection: true,
+			shouldFail:           false,
+			expectCmd:            "yt-dlp.exe",
+			expectArgs:           []string{"-a", filepath.Join("favorites", "fav_videos.txt"), "--output", filepath.Join("favorites", "%(upload_date)s_%(uploader_id)s.%(ext)s")},
 		},
 	}
 
@@ -319,7 +332,7 @@ func TestRunYtdlpWithRunner(t *testing.T) {
 			mockRunner := &MockCommandRunner{ShouldFail: tt.shouldFail}
 
 			// Capture output for verification
-			runYtdlpWithRunner(mockRunner, tt.psPrefix, tt.outputName, false)
+			runYtdlpWithRunner(mockRunner, tt.psPrefix, tt.outputName, tt.organizeByCollection)
 
 			// Verify command was called correctly
 			if len(mockRunner.Commands) != 1 {

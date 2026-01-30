@@ -271,9 +271,9 @@ func runYtdlpWithRunner(runner CommandRunner, psPrefix, outputName string, organ
 	// Configure output format based on organization preference
 	var outputFormat string
 	if organizeByCollection {
-		// If organizing by collection, yt-dlp will find the files in subdirectories
-		// Use a more descriptive filename format
-		outputFormat = "%(upload_date)s_%(uploader_id)s.%(ext)s"
+		// Include directory from outputName so videos download to collection folder
+		dir := filepath.Dir(outputName)
+		outputFormat = filepath.Join(dir, "%(upload_date)s_%(uploader_id)s.%(ext)s")
 	} else {
 		// Flat structure with original format
 		outputFormat = "%(upload_date)s_%(uploader_id)s.%(ext)s"
