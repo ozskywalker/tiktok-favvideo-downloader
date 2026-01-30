@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{.Name}} - TikTok Collection</title>
+    <style>
+        :root {
+            --bg-color: #1a1a2e;
+            --card-bg: #16213e;
+            --text-color: #eee;
+            --accent: #e94560;
+            --success: #4ecca3;
+            --error: #ff6b6b;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg-color);
+            color: var(--text-color);
+            padding: 20px;
+            line-height: 1.6;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .header h1 { color: var(--accent); margin-bottom: 10px; }
+        .stats {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+        .stat { padding: 10px 20px; background: var(--card-bg); border-radius: 8px; }
+        .stat-value { font-size: 1.5em; font-weight: bold; }
+        .stat-label { font-size: 0.9em; opacity: 0.8; }
+
+        .controls {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+        .search-box {
+            flex: 1;
+            min-width: 200px;
+            padding: 12px;
+            border: none;
+            border-radius: 8px;
+            background: var(--card-bg);
+            color: var(--text-color);
+            font-size: 1em;
+        }
+        .search-box::placeholder { color: #888; }
+        .filter-btn {
+            padding: 12px 20px;
+            border: none;
+            border-radius: 8px;
+            background: var(--card-bg);
+            color: var(--text-color);
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .filter-btn:hover { background: var(--accent); }
+        .filter-btn.active { background: var(--accent); }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 20px;
+        }
+        .video-card {
+            background: var(--card-bg);
+            border-radius: 12px;
+            overflow: hidden;
+            transition: transform 0.2s;
+        }
+        .video-card:hover { transform: translateY(-5px); }
+        .video-card.failed { opacity: 0.6; }
+
+        .thumbnail-container {
+            position: relative;
+            aspect-ratio: 9/16;
+            background: #000;
+        }
+        .thumbnail {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        .no-thumbnail {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            color: #666;
+            font-size: 0.9em;
+        }
+        .duration {
+            position: absolute;
+            bottom: 8px;
+            right: 8px;
+            background: rgba(0,0,0,0.8);
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 0.85em;
+        }
+        .status-badge {
+            position: absolute;
+            top: 8px;
+            left: 8px;
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 0.75em;
+            font-weight: bold;
+        }
+        .status-downloaded { background: var(--success); color: #000; }
+        .status-failed { background: var(--error); color: #fff; }
+
+        .video-info { padding: 15px; }
+        .video-title {
+            font-weight: 600;
+            margin-bottom: 8px;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+        .video-meta {
+            font-size: 0.85em;
+            opacity: 0.7;
+        }
+        .video-meta span { margin-right: 15px; }
+
+        .video-link {
+            display: block;
+            text-decoration: none;
+            color: inherit;
+        }
+
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.95);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+        }
+        .modal.active { display: flex; }
+        .modal-content {
+            max-width: 90%;
+            max-height: 90%;
+        }
+        .modal video {
+            max-width: 100%;
+            max-height: 90vh;
+        }
+        .modal-close {
+            position: absolute;
+            top: 20px;
+            right: 30px;
+            font-size: 40px;
+            color: #fff;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>{{.Name}}</h1>
+        <p>Generated: {{.GeneratedAt}}</p>
+        <div class="stats">
+            <div class="stat">
+                <div class="stat-value">{{.TotalVideos}}</div>
+                <div class="stat-label">Total Videos</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value" style="color: var(--success)">{{.Downloaded}}</div>
+                <div class="stat-label">Downloaded</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value" style="color: var(--error)">{{.Failed}}</div>
+                <div class="stat-label">Failed</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="controls">
+        <input type="text" class="search-box" id="searchBox" placeholder="Search by title, creator, or description...">
+        <button class="filter-btn active" data-filter="all">All</button>
+        <button class="filter-btn" data-filter="downloaded">Downloaded</button>
+        <button class="filter-btn" data-filter="failed">Failed</button>
+    </div>
+
+    <div class="grid" id="videoGrid">
+        {{range .Videos}}
+        <div class="video-card {{if not .Downloaded}}failed{{end}}"
+             data-title="{{.Title}}"
+             data-creator="{{.Creator}}"
+             data-desc="{{.Description}}"
+             data-status="{{if .Downloaded}}downloaded{{else}}failed{{end}}"
+             data-file="{{.LocalFilename}}">
+            <a href="{{if .Downloaded}}{{.LocalFilename}}{{else}}{{.Link}}{{end}}" class="video-link" {{if .Downloaded}}onclick="openVideo(event, this)"{{else}}target="_blank"{{end}}>
+                <div class="thumbnail-container">
+                    {{if .ThumbnailFile}}
+                    <img class="thumbnail" src="{{.ThumbnailFile}}" alt="{{.Title}}" loading="lazy">
+                    {{else}}
+                    <div class="no-thumbnail">No Thumbnail</div>
+                    {{end}}
+                    {{if .Duration}}
+                    <span class="duration">{{formatDuration .Duration}}</span>
+                    {{end}}
+                    <span class="status-badge {{if .Downloaded}}status-downloaded{{else}}status-failed{{end}}">
+                        {{if .Downloaded}}Downloaded{{else}}Failed{{end}}
+                    </span>
+                </div>
+                <div class="video-info">
+                    <div class="video-title">{{if .Title}}{{.Title}}{{else}}Video {{.VideoID}}{{end}}</div>
+                    <div class="video-meta">
+                        {{if .Creator}}<span>@{{.Creator}}</span>{{end}}
+                        {{if .Date}}<span>Saved: {{.Date}}</span>{{end}}
+                        {{if .ViewCount}}<span>{{formatNumber .ViewCount}} views</span>{{end}}
+                    </div>
+                </div>
+            </a>
+        </div>
+        {{end}}
+    </div>
+
+    <div class="modal" id="videoModal">
+        <span class="modal-close" onclick="closeModal()">&times;</span>
+        <div class="modal-content">
+            <video id="modalVideo" controls></video>
+        </div>
+    </div>
+
+    <script>
+        const searchBox = document.getElementById('searchBox');
+        const cards = document.querySelectorAll('.video-card');
+
+        searchBox.addEventListener('input', filterCards);
+
+        function filterCards() {
+            const query = searchBox.value.toLowerCase();
+            const activeFilter = document.querySelector('.filter-btn.active').dataset.filter;
+
+            cards.forEach(card => {
+                const title = (card.dataset.title || '').toLowerCase();
+                const creator = (card.dataset.creator || '').toLowerCase();
+                const desc = (card.dataset.desc || '').toLowerCase();
+                const status = card.dataset.status;
+
+                const matchesSearch = !query ||
+                    title.includes(query) ||
+                    creator.includes(query) ||
+                    desc.includes(query);
+
+                const matchesFilter = activeFilter === 'all' || status === activeFilter;
+
+                card.style.display = (matchesSearch && matchesFilter) ? 'block' : 'none';
+            });
+        }
+
+        document.querySelectorAll('.filter-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                filterCards();
+            });
+        });
+
+        function openVideo(event, element) {
+            event.preventDefault();
+            const videoPath = element.getAttribute('href');
+            const modal = document.getElementById('videoModal');
+            const video = document.getElementById('modalVideo');
+            video.src = videoPath;
+            modal.classList.add('active');
+            video.play();
+        }
+
+        function closeModal() {
+            const modal = document.getElementById('videoModal');
+            const video = document.getElementById('modalVideo');
+            video.pause();
+            video.src = '';
+            modal.classList.remove('active');
+        }
+
+        document.addEventListener('keydown', e => {
+            if (e.key === 'Escape') closeModal();
+        });
+
+        document.getElementById('videoModal').addEventListener('click', e => {
+            if (e.target.id === 'videoModal') closeModal();
+        });
+    </script>
+</body>
+</html>

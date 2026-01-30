@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"net/http"
@@ -285,6 +286,7 @@ func TestRunYtdlpWithRunner(t *testing.T) {
 		psPrefix             string
 		outputName           string
 		organizeByCollection bool
+		skipThumbnails       bool
 		shouldFail           bool
 		expectCmd            string
 		expectArgs           []string
@@ -294,36 +296,50 @@ func TestRunYtdlpWithRunner(t *testing.T) {
 			psPrefix:             "",
 			outputName:           "test_videos.txt",
 			organizeByCollection: false,
+			skipThumbnails:       false,
 			shouldFail:           false,
 			expectCmd:            "yt-dlp.exe",
-			expectArgs:           []string{"-a", "test_videos.txt", "--output", "%(upload_date)s_%(uploader_id)s.%(ext)s"},
+			expectArgs:           []string{"-a", "test_videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json", "--write-thumbnail"},
 		},
 		{
 			name:                 "successful execution with powershell prefix",
 			psPrefix:             ".\\",
 			outputName:           "fav_videos.txt",
 			organizeByCollection: false,
+			skipThumbnails:       false,
 			shouldFail:           false,
 			expectCmd:            ".\\yt-dlp.exe",
-			expectArgs:           []string{"-a", "fav_videos.txt", "--output", "%(upload_date)s_%(uploader_id)s.%(ext)s"},
+			expectArgs:           []string{"-a", "fav_videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json", "--write-thumbnail"},
 		},
 		{
 			name:                 "command execution failure",
 			psPrefix:             "",
 			outputName:           "videos.txt",
 			organizeByCollection: false,
+			skipThumbnails:       false,
 			shouldFail:           true,
 			expectCmd:            "yt-dlp.exe",
-			expectArgs:           []string{"-a", "videos.txt", "--output", "%(upload_date)s_%(uploader_id)s.%(ext)s"},
+			expectArgs:           []string{"-a", "videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json", "--write-thumbnail"},
 		},
 		{
 			name:                 "collection organized output goes to subdirectory",
 			psPrefix:             "",
 			outputName:           filepath.Join("favorites", "fav_videos.txt"),
 			organizeByCollection: true,
+			skipThumbnails:       false,
 			shouldFail:           false,
 			expectCmd:            "yt-dlp.exe",
-			expectArgs:           []string{"-a", filepath.Join("favorites", "fav_videos.txt"), "--output", filepath.Join("favorites", "%(upload_date)s_%(uploader_id)s.%(ext)s")},
+			expectArgs:           []string{"-a", filepath.Join("favorites", "fav_videos.txt"), "--output", filepath.Join("favorites", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s"), "--write-info-json", "--write-thumbnail"},
+		},
+		{
+			name:                 "skip thumbnails omits --write-thumbnail flag",
+			psPrefix:             "",
+			outputName:           "test_videos.txt",
+			organizeByCollection: false,
+			skipThumbnails:       true,
+			shouldFail:           false,
+			expectCmd:            "yt-dlp.exe",
+			expectArgs:           []string{"-a", "test_videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json"},
 		},
 	}
 
@@ -332,7 +348,7 @@ func TestRunYtdlpWithRunner(t *testing.T) {
 			mockRunner := &MockCommandRunner{ShouldFail: tt.shouldFail}
 
 			// Capture output for verification
-			runYtdlpWithRunner(mockRunner, tt.psPrefix, tt.outputName, tt.organizeByCollection)
+			runYtdlpWithRunner(mockRunner, tt.psPrefix, tt.outputName, tt.organizeByCollection, tt.skipThumbnails)
 
 			// Verify command was called correctly
 			if len(mockRunner.Commands) != 1 {
@@ -1043,14 +1059,15 @@ func TestCollectionOrganization(t *testing.T) {
 		}
 
 		// Test with collection organization enabled
-		err = writeFavoriteVideosToFile(videoEntries, "videos.txt", true)
+		// Note: outputName is ignored when organizing by collection - each collection uses its own filename
+		err = writeFavoriteVideosToFile(videoEntries, "ignored.txt", true)
 		if err != nil {
 			t.Errorf("writeFavoriteVideosToFile with organization failed: %v", err)
 		}
 
-		// Check if collection directories and files were created
-		favoritesFile := filepath.Join("favorites", "videos.txt")
-		likedFile := filepath.Join("liked", "videos.txt")
+		// Check if collection directories and files were created with collection-specific filenames
+		favoritesFile := filepath.Join("favorites", "fav_videos.txt")
+		likedFile := filepath.Join("liked", "liked_videos.txt")
 
 		if _, err := os.Stat(favoritesFile); os.IsNotExist(err) {
 			t.Errorf("expected favorites file %q to be created", favoritesFile)
@@ -1088,6 +1105,473 @@ func TestCollectionOrganization(t *testing.T) {
 	})
 }
 
+// TestExtractVideoID tests the video ID extraction from TikTok URLs
+func TestExtractVideoID(t *testing.T) {
+	tests := []struct {
+		name     string
+		url      string
+		expected string
+	}{
+		{
+			name:     "standard tiktokv share URL",
+			url:      "https://www.tiktokv.com/share/video/7600559584901647646/",
+			expected: "7600559584901647646",
+		},
+		{
+			name:     "tiktok user video URL",
+			url:      "https://www.tiktok.com/@user123/video/7600559584901647646",
+			expected: "7600559584901647646",
+		},
+		{
+			name:     "mobile tiktok v URL",
+			url:      "https://m.tiktok.com/v/7600559584901647646.html",
+			expected: "7600559584901647646",
+		},
+		{
+			name:     "URL with query params",
+			url:      "https://www.tiktok.com/@user/video/1234567890?is_from_webapp=1",
+			expected: "1234567890",
+		},
+		{
+			name:     "invalid URL no video ID",
+			url:      "https://www.tiktok.com/@user/profile",
+			expected: "",
+		},
+		{
+			name:     "empty URL",
+			url:      "",
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := extractVideoID(tt.url)
+			if result != tt.expected {
+				t.Errorf("extractVideoID(%q) = %q, want %q", tt.url, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestGetOutputFilename tests collection-specific filename generation
+func TestGetOutputFilename(t *testing.T) {
+	tests := []struct {
+		collection string
+		expected   string
+	}{
+		{"favorites", "fav_videos.txt"},
+		{"liked", "liked_videos.txt"},
+		{"other", "fav_videos.txt"},
+		{"", "fav_videos.txt"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.collection, func(t *testing.T) {
+			result := getOutputFilename(tt.collection)
+			if result != tt.expected {
+				t.Errorf("getOutputFilename(%q) = %q, want %q", tt.collection, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestParseInfoJSON tests parsing of yt-dlp info.json files
+func TestParseInfoJSON(t *testing.T) {
+	t.Run("valid info json", func(t *testing.T) {
+		// Create temp file with valid JSON
+		tmpFile, err := os.CreateTemp("", "info_*.json")
+		if err != nil {
+			t.Fatalf("failed to create temp file: %v", err)
+		}
+		defer os.Remove(tmpFile.Name())
+
+		infoJSON := `{
+			"id": "7600559584901647646",
+			"title": "Test Video Title",
+			"uploader": "TestUser",
+			"uploader_id": "testuser123",
+			"upload_date": "20260129",
+			"description": "Test description",
+			"duration": 45,
+			"view_count": 1500000,
+			"like_count": 50000,
+			"thumbnail": "https://example.com/thumb.jpg",
+			"filename": "20260129_7600559584901647646_Test_Video.mp4"
+		}`
+
+		if _, err := tmpFile.WriteString(infoJSON); err != nil {
+			t.Fatalf("failed to write to temp file: %v", err)
+		}
+		tmpFile.Close()
+
+		info, err := parseInfoJSON(tmpFile.Name())
+		if err != nil {
+			t.Fatalf("parseInfoJSON failed: %v", err)
+		}
+
+		if info.ID != "7600559584901647646" {
+			t.Errorf("expected ID '7600559584901647646', got %q", info.ID)
+		}
+		if info.Title != "Test Video Title" {
+			t.Errorf("expected Title 'Test Video Title', got %q", info.Title)
+		}
+		if info.Duration != 45 {
+			t.Errorf("expected Duration 45, got %d", info.Duration)
+		}
+		if info.ViewCount != 1500000 {
+			t.Errorf("expected ViewCount 1500000, got %d", info.ViewCount)
+		}
+	})
+
+	t.Run("invalid json", func(t *testing.T) {
+		tmpFile, err := os.CreateTemp("", "invalid_*.json")
+		if err != nil {
+			t.Fatalf("failed to create temp file: %v", err)
+		}
+		defer os.Remove(tmpFile.Name())
+
+		if _, err := tmpFile.WriteString("not valid json"); err != nil {
+			t.Fatalf("failed to write to temp file: %v", err)
+		}
+		tmpFile.Close()
+
+		_, err = parseInfoJSON(tmpFile.Name())
+		if err == nil {
+			t.Error("expected error for invalid JSON, got nil")
+		}
+	})
+
+	t.Run("file not found", func(t *testing.T) {
+		_, err := parseInfoJSON("nonexistent_file.json")
+		if err == nil {
+			t.Error("expected error for nonexistent file, got nil")
+		}
+	})
+}
+
+// TestGetEntriesForCollection tests filtering video entries by collection
+func TestGetEntriesForCollection(t *testing.T) {
+	entries := []VideoEntry{
+		{Link: "https://fav1.com", Collection: "favorites"},
+		{Link: "https://fav2.com", Collection: "favorites"},
+		{Link: "https://liked1.com", Collection: "liked"},
+		{Link: "https://liked2.com", Collection: "liked"},
+		{Link: "https://other.com", Collection: "other"},
+	}
+
+	t.Run("filter favorites", func(t *testing.T) {
+		result := getEntriesForCollection(entries, "favorites")
+		if len(result) != 2 {
+			t.Errorf("expected 2 favorites, got %d", len(result))
+		}
+	})
+
+	t.Run("filter liked", func(t *testing.T) {
+		result := getEntriesForCollection(entries, "liked")
+		if len(result) != 2 {
+			t.Errorf("expected 2 liked, got %d", len(result))
+		}
+	})
+
+	t.Run("filter nonexistent", func(t *testing.T) {
+		result := getEntriesForCollection(entries, "nonexistent")
+		if len(result) != 0 {
+			t.Errorf("expected 0 entries, got %d", len(result))
+		}
+	})
+}
+
+// TestGenerateCollectionIndex tests the index generation functionality
+func TestGenerateCollectionIndex(t *testing.T) {
+	t.Run("generates index files with metadata enrichment", func(t *testing.T) {
+		// Create temp directory
+		tmpDir, err := os.MkdirTemp("", "collection_test_*")
+		if err != nil {
+			t.Fatalf("failed to create temp dir: %v", err)
+		}
+		defer os.RemoveAll(tmpDir)
+
+		// Create mock .info.json file
+		infoJSON := `{
+			"id": "7600559584901647646",
+			"title": "Test Video Title",
+			"uploader": "TestUser",
+			"uploader_id": "testuser123",
+			"upload_date": "20260129",
+			"description": "Test description",
+			"duration": 45,
+			"view_count": 1500000,
+			"like_count": 50000,
+			"thumbnail": "https://example.com/thumb.jpg",
+			"filename": "20260129_7600559584901647646_Test_Video.mp4"
+		}`
+		infoPath := filepath.Join(tmpDir, "20260129_7600559584901647646_Test_Video.info.json")
+		if err := os.WriteFile(infoPath, []byte(infoJSON), 0644); err != nil {
+			t.Fatalf("failed to write info.json: %v", err)
+		}
+
+		// Create video entries
+		entries := []VideoEntry{
+			{
+				Link:       "https://www.tiktok.com/@user/video/7600559584901647646",
+				Date:       "2026-01-29",
+				Collection: "favorites",
+			},
+			{
+				Link:       "https://www.tiktok.com/@user/video/9999999999999999999",
+				Date:       "2026-01-28",
+				Collection: "favorites",
+			},
+		}
+
+		// Store original values to verify no mutation
+		originalLink0 := entries[0].Link
+		originalTitle0 := entries[0].Title
+
+		// Generate index
+		err = generateCollectionIndex(tmpDir, entries)
+		if err != nil {
+			t.Fatalf("generateCollectionIndex failed: %v", err)
+		}
+
+		// Verify index.json was created
+		indexJSONPath := filepath.Join(tmpDir, "index.json")
+		if _, err := os.Stat(indexJSONPath); os.IsNotExist(err) {
+			t.Error("index.json was not created")
+		}
+
+		// Verify index.html was created
+		indexHTMLPath := filepath.Join(tmpDir, "index.html")
+		if _, err := os.Stat(indexHTMLPath); os.IsNotExist(err) {
+			t.Error("index.html was not created")
+		}
+
+		// Read and verify index.json content
+		indexData, err := os.ReadFile(indexJSONPath)
+		if err != nil {
+			t.Fatalf("failed to read index.json: %v", err)
+		}
+
+		var index CollectionIndex
+		if err := json.Unmarshal(indexData, &index); err != nil {
+			t.Fatalf("failed to parse index.json: %v", err)
+		}
+
+		// Verify index structure
+		if index.TotalVideos != 2 {
+			t.Errorf("expected TotalVideos=2, got %d", index.TotalVideos)
+		}
+		if index.Downloaded != 1 {
+			t.Errorf("expected Downloaded=1, got %d", index.Downloaded)
+		}
+		if index.Failed != 1 {
+			t.Errorf("expected Failed=1, got %d", index.Failed)
+		}
+
+		// Verify first video was enriched with metadata
+		if len(index.Videos) != 2 {
+			t.Fatalf("expected 2 videos, got %d", len(index.Videos))
+		}
+		if index.Videos[0].Title != "Test Video Title" {
+			t.Errorf("expected Title 'Test Video Title', got %q", index.Videos[0].Title)
+		}
+		if index.Videos[0].Creator != "TestUser" {
+			t.Errorf("expected Creator 'TestUser', got %q", index.Videos[0].Creator)
+		}
+		if !index.Videos[0].Downloaded {
+			t.Error("expected first video to be marked as downloaded")
+		}
+
+		// Verify second video marked as failed
+		if index.Videos[1].Downloaded {
+			t.Error("expected second video to be marked as failed")
+		}
+
+		// Verify original entries were NOT mutated
+		if entries[0].Link != originalLink0 {
+			t.Errorf("original entry Link was mutated")
+		}
+		if entries[0].Title != originalTitle0 {
+			t.Errorf("original entry Title was mutated: expected %q, got %q", originalTitle0, entries[0].Title)
+		}
+	})
+
+	t.Run("handles empty collection", func(t *testing.T) {
+		tmpDir, err := os.MkdirTemp("", "empty_collection_*")
+		if err != nil {
+			t.Fatalf("failed to create temp dir: %v", err)
+		}
+		defer os.RemoveAll(tmpDir)
+
+		entries := []VideoEntry{}
+
+		err = generateCollectionIndex(tmpDir, entries)
+		if err != nil {
+			t.Fatalf("generateCollectionIndex failed on empty collection: %v", err)
+		}
+
+		// Verify index files were still created
+		if _, err := os.Stat(filepath.Join(tmpDir, "index.json")); os.IsNotExist(err) {
+			t.Error("index.json was not created for empty collection")
+		}
+		if _, err := os.Stat(filepath.Join(tmpDir, "index.html")); os.IsNotExist(err) {
+			t.Error("index.html was not created for empty collection")
+		}
+	})
+
+	t.Run("handles missing info.json gracefully", func(t *testing.T) {
+		tmpDir, err := os.MkdirTemp("", "no_info_*")
+		if err != nil {
+			t.Fatalf("failed to create temp dir: %v", err)
+		}
+		defer os.RemoveAll(tmpDir)
+
+		entries := []VideoEntry{
+			{
+				Link:       "https://www.tiktok.com/@user/video/1234567890",
+				Collection: "favorites",
+			},
+		}
+
+		err = generateCollectionIndex(tmpDir, entries)
+		if err != nil {
+			t.Fatalf("generateCollectionIndex failed: %v", err)
+		}
+
+		// Read index.json and verify the entry is marked as failed
+		indexData, err := os.ReadFile(filepath.Join(tmpDir, "index.json"))
+		if err != nil {
+			t.Fatalf("failed to read index.json: %v", err)
+		}
+
+		var index CollectionIndex
+		if err := json.Unmarshal(indexData, &index); err != nil {
+			t.Fatalf("failed to parse index.json: %v", err)
+		}
+
+		if index.Downloaded != 0 {
+			t.Errorf("expected Downloaded=0, got %d", index.Downloaded)
+		}
+		if index.Failed != 1 {
+			t.Errorf("expected Failed=1, got %d", index.Failed)
+		}
+	})
+}
+
+// TestWriteHTMLIndex tests the HTML template rendering
+func TestWriteHTMLIndex(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "html_test_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	index := &CollectionIndex{
+		Name:        "test_collection",
+		GeneratedAt: "2026-01-29 12:00:00",
+		TotalVideos: 2,
+		Downloaded:  1,
+		Failed:      1,
+		Videos: []VideoEntry{
+			{
+				VideoID:    "123456",
+				Title:      "Test Video",
+				Creator:    "TestUser",
+				Downloaded: true,
+			},
+			{
+				VideoID:    "789012",
+				Title:      "Failed Video",
+				Downloaded: false,
+			},
+		},
+	}
+
+	err = writeHTMLIndex(tmpDir, index)
+	if err != nil {
+		t.Fatalf("writeHTMLIndex failed: %v", err)
+	}
+
+	// Verify file was created
+	htmlPath := filepath.Join(tmpDir, "index.html")
+	if _, err := os.Stat(htmlPath); os.IsNotExist(err) {
+		t.Fatal("index.html was not created")
+	}
+
+	// Read and verify content contains expected elements
+	content, err := os.ReadFile(htmlPath)
+	if err != nil {
+		t.Fatalf("failed to read index.html: %v", err)
+	}
+
+	contentStr := string(content)
+	if !strings.Contains(contentStr, "test_collection") {
+		t.Error("HTML doesn't contain collection name")
+	}
+	if !strings.Contains(contentStr, "Test Video") {
+		t.Error("HTML doesn't contain video title")
+	}
+	if !strings.Contains(contentStr, "TestUser") {
+		t.Error("HTML doesn't contain creator name")
+	}
+}
+
+// TestFormatDuration tests the duration formatting function
+func TestFormatDuration(t *testing.T) {
+	funcs := getTemplateFuncs()
+	formatDuration := funcs["formatDuration"].(func(int) string)
+
+	tests := []struct {
+		seconds  int
+		expected string
+	}{
+		{0, "0:00"},
+		{5, "0:05"},
+		{59, "0:59"},
+		{60, "1:00"},
+		{65, "1:05"},
+		{125, "2:05"},
+		{3600, "60:00"},
+		{3661, "61:01"},
+	}
+
+	for _, tt := range tests {
+		result := formatDuration(tt.seconds)
+		if result != tt.expected {
+			t.Errorf("formatDuration(%d) = %q, want %q", tt.seconds, result, tt.expected)
+		}
+	}
+}
+
+// TestFormatNumber tests the number formatting function
+func TestFormatNumber(t *testing.T) {
+	funcs := getTemplateFuncs()
+	formatNumber := funcs["formatNumber"].(func(int64) string)
+
+	tests := []struct {
+		number   int64
+		expected string
+	}{
+		{0, "0"},
+		{999, "999"},
+		{1000, "1.0K"},
+		{1500, "1.5K"},
+		{10000, "10.0K"},
+		{999999, "1000.0K"},
+		{1000000, "1.0M"},
+		{1500000, "1.5M"},
+		{10000000, "10.0M"},
+	}
+
+	for _, tt := range tests {
+		result := formatNumber(tt.number)
+		if result != tt.expected {
+			t.Errorf("formatNumber(%d) = %q, want %q", tt.number, result, tt.expected)
+		}
+	}
+}
+
 // TestParseFlags tests the new CLI flag parsing functionality
 func TestParseFlags(t *testing.T) {
 	// Save original command line args
@@ -1095,34 +1579,68 @@ func TestParseFlags(t *testing.T) {
 	defer func() { os.Args = originalArgs }()
 
 	tests := []struct {
-		name                 string
-		args                 []string
-		expectedJSONFile     string
-		expectedOrganization bool
+		name                   string
+		args                   []string
+		expectedJSONFile       string
+		expectedOrganization   bool
+		expectedSkipThumbnails bool
+		expectedIndexOnly      bool
 	}{
 		{
-			name:                 "default_settings",
-			args:                 []string{"program"},
-			expectedJSONFile:     "user_data_tiktok.json",
-			expectedOrganization: true,
+			name:                   "default_settings",
+			args:                   []string{"program"},
+			expectedJSONFile:       "user_data_tiktok.json",
+			expectedOrganization:   true,
+			expectedSkipThumbnails: false,
+			expectedIndexOnly:      false,
 		},
 		{
-			name:                 "flat_structure_flag",
-			args:                 []string{"program", "--flat-structure"},
-			expectedJSONFile:     "user_data_tiktok.json",
-			expectedOrganization: false,
+			name:                   "flat_structure_flag",
+			args:                   []string{"program", "--flat-structure"},
+			expectedJSONFile:       "user_data_tiktok.json",
+			expectedOrganization:   false,
+			expectedSkipThumbnails: false,
+			expectedIndexOnly:      false,
 		},
 		{
-			name:                 "custom_json_file",
-			args:                 []string{"program", "custom_data.json"},
-			expectedJSONFile:     "custom_data.json",
-			expectedOrganization: true,
+			name:                   "custom_json_file",
+			args:                   []string{"program", "custom_data.json"},
+			expectedJSONFile:       "custom_data.json",
+			expectedOrganization:   true,
+			expectedSkipThumbnails: false,
+			expectedIndexOnly:      false,
 		},
 		{
-			name:                 "flat_structure_with_custom_file",
-			args:                 []string{"program", "--flat-structure", "custom_data.json"},
-			expectedJSONFile:     "custom_data.json",
-			expectedOrganization: false,
+			name:                   "flat_structure_with_custom_file",
+			args:                   []string{"program", "--flat-structure", "custom_data.json"},
+			expectedJSONFile:       "custom_data.json",
+			expectedOrganization:   false,
+			expectedSkipThumbnails: false,
+			expectedIndexOnly:      false,
+		},
+		{
+			name:                   "no_thumbnails_flag",
+			args:                   []string{"program", "--no-thumbnails"},
+			expectedJSONFile:       "user_data_tiktok.json",
+			expectedOrganization:   true,
+			expectedSkipThumbnails: true,
+			expectedIndexOnly:      false,
+		},
+		{
+			name:                   "index_only_flag",
+			args:                   []string{"program", "--index-only"},
+			expectedJSONFile:       "user_data_tiktok.json",
+			expectedOrganization:   true,
+			expectedSkipThumbnails: false,
+			expectedIndexOnly:      true,
+		},
+		{
+			name:                   "all_flags_combined",
+			args:                   []string{"program", "--flat-structure", "--no-thumbnails", "--index-only", "custom.json"},
+			expectedJSONFile:       "custom.json",
+			expectedOrganization:   false,
+			expectedSkipThumbnails: true,
+			expectedIndexOnly:      true,
 		},
 	}
 
@@ -1142,6 +1660,14 @@ func TestParseFlags(t *testing.T) {
 
 			if config.OrganizeByCollection != tt.expectedOrganization {
 				t.Errorf("expected OrganizeByCollection %v, got %v", tt.expectedOrganization, config.OrganizeByCollection)
+			}
+
+			if config.SkipThumbnails != tt.expectedSkipThumbnails {
+				t.Errorf("expected SkipThumbnails %v, got %v", tt.expectedSkipThumbnails, config.SkipThumbnails)
+			}
+
+			if config.IndexOnly != tt.expectedIndexOnly {
+				t.Errorf("expected IndexOnly %v, got %v", tt.expectedIndexOnly, config.IndexOnly)
 			}
 		})
 	}

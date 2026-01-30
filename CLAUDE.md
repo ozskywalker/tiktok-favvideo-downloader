@@ -22,6 +22,12 @@ tiktok-favvideo-downloader.exe my_data.json
 
 # Combine flags and custom file
 tiktok-favvideo-downloader.exe --flat-structure my_data.json
+
+# Skip thumbnail downloads (faster, less storage)
+tiktok-favvideo-downloader.exe --no-thumbnails
+
+# Regenerate indexes without re-downloading videos
+tiktok-favvideo-downloader.exe --index-only
 ```
 
 ### Collection Directory Structure
@@ -29,13 +35,49 @@ tiktok-favvideo-downloader.exe --flat-structure my_data.json
 project-folder/
 ├── tiktok-favvideo-downloader.exe
 ├── user_data_tiktok.json
-├── favorites/
-│   ├── fav_videos.txt
-│   └── [downloaded video files]
-└── liked/
-    ├── fav_videos.txt
-    └── [downloaded video files]
+│
+├── favorites/                                        # Favorited videos collection
+│   ├── fav_videos.txt                               # URL list (yt-dlp compatible)
+│   ├── index.json                                   # Machine-readable metadata index
+│   ├── index.html                                   # Visual browser (open in Chrome)
+│   ├── 20260129_7600559584901647646_Funny_Cat.mp4   # Video file
+│   ├── 20260129_7600559584901647646_Funny_Cat.info.json  # yt-dlp metadata
+│   ├── 20260129_7600559584901647646_Funny_Cat.jpg   # Thumbnail
+│   └── ...
+│
+└── liked/                                           # Liked videos collection (if opted in)
+    ├── liked_videos.txt                             # Note: different filename for liked
+    ├── index.json
+    ├── index.html
+    └── ...
 ```
+
+### Video Metadata & Indexing Feature
+
+After downloading videos, the application generates:
+
+1. **`index.html`** - Visual browser with:
+   - Thumbnail grid view
+   - Search by title, creator, or description
+   - Filter by download status (All/Downloaded/Failed)
+   - Click-to-play video modal
+   - Dark theme, works offline
+
+2. **`index.json`** - Machine-readable index with:
+   - Video metadata (title, creator, duration, views, etc.)
+   - Favorited dates from TikTok export
+   - Download status and local filenames
+   - Original TikTok URLs
+
+### Filename Format
+Videos are downloaded with the format: `%(upload_date)s_%(id)s_%(title).50B.%(ext)s`
+
+Example: `20260129_7600559584901647646_Funny_Cat_Video_Title.mp4`
+
+This includes:
+- Upload date for chronological sorting
+- Video ID for uniqueness
+- Truncated title (50 bytes) for identification
 
 ## Development Commands
 
@@ -96,36 +138,50 @@ go mod tidy
 This is a single-package Go application (`package main`) that downloads TikTok favorite/liked videos using yt-dlp. The main components are:
 
 - **Main executable**: `generate_tiktok_links.go` - Core application logic
-- **Tests**: `generate_tiktok_links_test.go` - Comprehensive test suite with 56.6% coverage
-- **No external dependencies**: Pure Go standard library implementation
+- **Tests**: `generate_tiktok_links_test.go` - Comprehensive test suite with 64.7% coverage
+- **Templates**: `templates/index.html` - Embedded HTML template for visual browser (via `//go:embed`)
+- **No external dependencies**: Pure Go standard library implementation (uses `embed` package)
 
 ### Key Components
 
 1. **JSON Data Parsing**: Parses TikTok's `user_data_tiktok.json` export file
    - `Data` struct defines the expected JSON structure
    - `parseFavoriteVideosFromFile()` extracts video entries with collection metadata
-   - `VideoEntry` struct contains Link, Date, and Collection information
+   - `VideoEntry` struct contains Link, Date, Collection, and extended metadata fields
 
 2. **Collection Organization**: Organizes videos by collection type (enabled by default)
    - `sanitizeCollectionName()` ensures collection names are valid directory names
    - `createCollectionDirectories()` creates subdirectories for each collection
    - `writeFavoriteVideosToFile()` writes videos to collection-specific files
+   - `getOutputFilename()` returns collection-specific filenames (fav_videos.txt vs liked_videos.txt)
    - Supports `--flat-structure` flag to disable organization
 
 3. **yt-dlp Integration**: Downloads and manages the yt-dlp executable
    - `getOrDownloadYtdlp()` automatically downloads latest yt-dlp.exe from GitHub if not present
-   - `runYtdlp()` executes yt-dlp with appropriate arguments for each collection
+   - `runYtdlp()` executes yt-dlp with `--write-info-json` and optional `--write-thumbnail` flags
+   - Supports `--no-thumbnails` flag to skip thumbnail downloads
+   - New filename format includes video ID and truncated title
 
-4. **CLI Flag Parsing**: Command-line argument handling
-   - `parseFlags()` handles `--flat-structure`, `--help` flags
+4. **Video Metadata & Indexing**: Generates browsable indexes after download
+   - `YtdlpInfo` struct for parsing yt-dlp's .info.json files
+   - `CollectionIndex` struct for the complete collection metadata
+   - `extractVideoID()` parses video IDs from TikTok URLs
+   - `parseInfoJSON()` reads yt-dlp metadata files
+   - `generateCollectionIndex()` creates index.json and index.html after download
+   - `getEntriesForCollection()` filters entries by collection name
+   - HTML template with search, filter, and embedded video player
+
+5. **CLI Flag Parsing**: Command-line argument handling
+   - `parseFlags()` handles `--flat-structure`, `--no-thumbnails`, `--index-only`, `--help` flags
    - `Config` struct stores application configuration
    - Supports positional arguments for custom JSON file paths
+   - `--index-only` mode regenerates indexes from existing .info.json files without downloading
 
-5. **Cross-platform Command Execution**: Handles PowerShell vs Command Prompt differences
+6. **Cross-platform Command Execution**: Handles PowerShell vs Command Prompt differences
    - `isRunningInPowershell()` detects PowerShell environment
    - Adjusts command prefixes accordingly (`.\` for PowerShell)
 
-6. **Version Management**: Uses build-time ldflags to inject version information
+7. **Version Management**: Uses build-time ldflags to inject version information
    - `version` variable is overridden during builds via `-ldflags="-X 'main.version=...'"`
 
 ### Testing Architecture
