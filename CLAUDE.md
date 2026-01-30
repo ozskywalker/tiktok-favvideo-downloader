@@ -79,6 +79,95 @@ This includes:
 - Video ID for uniqueness
 - Truncated title (50 bytes) for identification
 
+### Download Session Reporting
+
+After each download session completes, the application provides comprehensive reporting:
+
+1. **Console Summary** - Displays at the end of each session:
+   - Session duration
+   - Total videos attempted, successful, and failed
+   - Per-collection breakdown (when using collection organization)
+   - Reference to `results.txt` for detailed failure information
+
+2. **`results.txt` File** - Appends detailed session results to a log file in the root directory:
+   - Session timestamp and duration
+   - Summary statistics (attempted/success/failed counts)
+   - Detailed failure list with:
+     - Video ID and URL
+     - Error type (IP Blocked, Authentication Required, Not Available, Network Timeout, Other)
+     - Full error message from yt-dlp
+   - Troubleshooting tips specific to encountered error types
+   - Multiple sessions are preserved with clear separators
+
+Example console output:
+```
+================================================================================
+                        DOWNLOAD SESSION SUMMARY
+================================================================================
+Duration: 15m 32s
+Total Videos Attempted: 127
+  ✓ Successfully Downloaded: 119
+  ✗ Failed: 8
+
+Collection Breakdown:
+  favorites:
+    Attempted: 92  |  Success: 87  |  Failed: 5
+  liked:
+    Attempted: 35  |  Success: 32  |  Failed: 3
+
+For detailed failure information, see results.txt
+================================================================================
+```
+
+Example `results.txt` entry:
+```
+================================================================================
+TikTok Video Downloader - Session Results
+Generated: 2026-01-30 14:35:22
+Duration: 15m 32s
+================================================================================
+
+SUMMARY
+=======
+Total Videos Attempted: 127
+Successfully Downloaded: 119
+Failed: 8
+
+FAILED DOWNLOADS
+================
+
+Collection: favorites (5 failures)
+--------------------------------------------------
+
+1. Video ID: 7600559584901647646
+   URL: https://www.tiktok.com/@user/video/7600559584901647646
+   Error Type: IP Blocked
+   Error: Your IP address is blocked from accessing this post
+
+2. Video ID: 7600559584901647647
+   URL: https://www.tiktok.com/@user/video/7600559584901647647
+   Error Type: Authentication Required
+   Error: This post may not be comfortable for some audiences. Log in for access
+
+TROUBLESHOOTING TIPS
+====================
+IP Blocked (3 videos):
+  - Your IP may be rate-limited by TikTok
+  - Try again after waiting 30-60 minutes
+  - Consider using a VPN or different network
+
+Authentication Required (2 videos):
+  - These videos require login to view
+  - You may need to download manually while logged in
+```
+
+**Error Types:**
+- **IP Blocked** - Your IP address is rate-limited or blocked by TikTok
+- **Authentication Required** - Video requires login to access (age-restricted content)
+- **Not Available** - Video deleted, private, or region-locked
+- **Network Timeout** - Connection issues or timeouts
+- **Other** - Miscellaneous errors not matching known patterns
+
 ## Development Commands
 
 ### Building
@@ -171,7 +260,17 @@ This is a single-package Go application (`package main`) that downloads TikTok f
    - `getEntriesForCollection()` filters entries by collection name
    - HTML template with search, filter, and embedded video player
 
-5. **CLI Flag Parsing**: Command-line argument handling
+5. **Download Session Reporting**: Tracks and reports download results
+   - `CapturedOutput` struct stores yt-dlp stdout/stderr for parsing
+   - `DownloadSession` and `CollectionResult` structs track session statistics
+   - `FailureDetail` struct captures per-video error information
+   - `parseYtdlpOutput()` extracts error messages from yt-dlp output using regex
+   - `categorizeError()` classifies errors into types (IP blocked, auth required, etc.)
+   - `printSessionSummary()` displays end-of-session statistics to console
+   - `writeResultsFile()` appends detailed results to results.txt with troubleshooting tips
+   - Uses `io.MultiWriter` to capture output while still displaying real-time progress
+
+6. **CLI Flag Parsing**: Command-line argument handling
    - `parseFlags()` handles `--flat-structure`, `--no-thumbnails`, `--index-only`, `--help` flags
    - `Config` struct stores application configuration
    - Supports positional arguments for custom JSON file paths

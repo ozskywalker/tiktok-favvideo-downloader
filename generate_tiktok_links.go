@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	_ "embed"
 	"encoding/json"
 	"flag"
@@ -78,6 +79,68 @@ type CollectionIndex struct {
 	Downloaded  int          `json:"downloaded"`
 	Failed      int          `json:"failed"`
 	Videos      []VideoEntry `json:"videos"`
+}
+
+// CapturedOutput stores stdout and stderr from yt-dlp
+type CapturedOutput struct {
+	Stdout   bytes.Buffer
+	Stderr   bytes.Buffer
+	Combined []string // Line-by-line for parsing
+}
+
+// DownloadSession tracks results across all collections
+type DownloadSession struct {
+	StartTime      time.Time
+	EndTime        time.Time
+	Collections    []CollectionResult
+	TotalAttempted int
+	TotalSuccess   int
+	TotalFailed    int
+}
+
+// CollectionResult tracks results for a single collection
+type CollectionResult struct {
+	Name           string
+	Attempted      int
+	Success        int
+	Failed         int
+	FailureDetails []FailureDetail
+}
+
+// FailureDetail contains information about a failed download
+type FailureDetail struct {
+	VideoID      string
+	VideoURL     string
+	ErrorMessage string
+	ErrorType    ErrorType
+}
+
+// ErrorType categorizes common error types
+type ErrorType int
+
+const (
+	ErrorUnknown ErrorType = iota
+	ErrorIPBlocked
+	ErrorAuthRequired
+	ErrorNotAvailable
+	ErrorNetworkTimeout
+	ErrorOther
+)
+
+// String returns a human-readable description of the error type
+func (e ErrorType) String() string {
+	switch e {
+	case ErrorIPBlocked:
+		return "IP Blocked"
+	case ErrorAuthRequired:
+		return "Authentication Required"
+	case ErrorNotAvailable:
+		return "Not Available"
+	case ErrorNetworkTimeout:
+		return "Network Timeout"
+	default:
+		return "Other Error"
+	}
 }
 
 // Data represents the structure of user_data_tiktok.json
@@ -341,26 +404,256 @@ func isRunningInPowershell() bool {
 
 // CommandRunner interface for testing command execution
 type CommandRunner interface {
-	Run(name string, args ...string) error
+	Run(name string, args ...string) (CapturedOutput, error)
 }
 
 // RealCommandRunner implements CommandRunner using exec.Command
 type RealCommandRunner struct{}
 
-func (r *RealCommandRunner) Run(name string, args ...string) error {
+func (r *RealCommandRunner) Run(name string, args ...string) (CapturedOutput, error) {
 	cmd := exec.Command(name, args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+
+	var stdoutBuf, stderrBuf bytes.Buffer
+
+	// Use MultiWriter to both capture AND display output
+	cmd.Stdout = io.MultiWriter(os.Stdout, &stdoutBuf)
+	cmd.Stderr = io.MultiWriter(os.Stderr, &stderrBuf)
+
+	err := cmd.Run()
+
+	// Combine output line-by-line
+	combined := combineOutputLines(stdoutBuf.String(), stderrBuf.String())
+
+	return CapturedOutput{
+		Stdout:   stdoutBuf,
+		Stderr:   stderrBuf,
+		Combined: combined,
+	}, err
+}
+
+// combineOutputLines merges stdout and stderr into a single line-by-line array
+func combineOutputLines(stdout, stderr string) []string {
+	lines := make([]string, 0)
+	lines = append(lines, strings.Split(stdout, "\n")...)
+	lines = append(lines, strings.Split(stderr, "\n")...)
+	return lines
+}
+
+// parseYtdlpOutput extracts failure details from yt-dlp output
+// yt-dlp error format: ERROR: [TikTok] VIDEO_ID: error message
+func parseYtdlpOutput(lines []string, entries []VideoEntry) []FailureDetail {
+	failures := make([]FailureDetail, 0)
+
+	// Build video ID to URL map
+	idToURL := make(map[string]string)
+	for _, entry := range entries {
+		if entry.VideoID != "" {
+			idToURL[entry.VideoID] = entry.Link
+		}
+	}
+
+	// Regex: ERROR: [TikTok] VIDEO_ID: error message
+	errorPattern := regexp.MustCompile(`ERROR:\s*\[TikTok\]\s*(\d+):\s*(.+)`)
+
+	for _, line := range lines {
+		matches := errorPattern.FindStringSubmatch(line)
+		if len(matches) >= 3 {
+			videoID := matches[1]
+			errorMsg := strings.TrimSpace(matches[2])
+
+			failures = append(failures, FailureDetail{
+				VideoID:      videoID,
+				VideoURL:     idToURL[videoID],
+				ErrorMessage: errorMsg,
+				ErrorType:    categorizeError(errorMsg),
+			})
+		}
+	}
+
+	return failures
+}
+
+// categorizeError classifies error messages into types
+func categorizeError(errorMsg string) ErrorType {
+	msgLower := strings.ToLower(errorMsg)
+
+	if strings.Contains(msgLower, "ip address is blocked") {
+		return ErrorIPBlocked
+	}
+	if strings.Contains(msgLower, "log in for access") ||
+		strings.Contains(msgLower, "not comfortable for some audiences") {
+		return ErrorAuthRequired
+	}
+	if strings.Contains(msgLower, "not available") ||
+		strings.Contains(msgLower, "private video") {
+		return ErrorNotAvailable
+	}
+	if strings.Contains(msgLower, "timeout") ||
+		strings.Contains(msgLower, "connection refused") {
+		return ErrorNetworkTimeout
+	}
+
+	return ErrorOther
+}
+
+// calculateSessionTotals aggregates totals across all collections
+func calculateSessionTotals(collections []CollectionResult) (attempted, success, failed int) {
+	for _, col := range collections {
+		attempted += col.Attempted
+		success += col.Success
+		failed += col.Failed
+	}
+	return
+}
+
+// printSessionSummary displays end-of-session summary to console
+func printSessionSummary(session *DownloadSession) {
+	duration := session.EndTime.Sub(session.StartTime)
+
+	fmt.Println("\n" + strings.Repeat("=", 80))
+	fmt.Println("                        DOWNLOAD SESSION SUMMARY")
+	fmt.Println(strings.Repeat("=", 80))
+	fmt.Printf("Duration: %s\n", formatDuration(int(duration.Seconds())))
+	fmt.Printf("Total Videos Attempted: %d\n", session.TotalAttempted)
+	fmt.Printf("  ✓ Successfully Downloaded: %d\n", session.TotalSuccess)
+	fmt.Printf("  ✗ Failed: %d\n\n", session.TotalFailed)
+
+	if len(session.Collections) > 1 {
+		fmt.Println("Collection Breakdown:")
+		for _, col := range session.Collections {
+			fmt.Printf("  %s:\n", col.Name)
+			fmt.Printf("    Attempted: %-4d | Success: %-4d | Failed: %d\n",
+				col.Attempted, col.Success, col.Failed)
+		}
+		fmt.Println()
+	}
+
+	if session.TotalFailed > 0 {
+		fmt.Println("For detailed failure information, see results.txt")
+	}
+	fmt.Println(strings.Repeat("=", 80))
+}
+
+// formatDuration converts seconds to a human-readable duration string
+func formatDuration(seconds int) string {
+	if seconds < 60 {
+		return fmt.Sprintf("%ds", seconds)
+	}
+	minutes := seconds / 60
+	secs := seconds % 60
+	if minutes < 60 {
+		return fmt.Sprintf("%dm %ds", minutes, secs)
+	}
+	hours := minutes / 60
+	mins := minutes % 60
+	return fmt.Sprintf("%dh %dm %ds", hours, mins, secs)
+}
+
+// writeResultsFile appends session results to results.txt
+func writeResultsFile(session *DownloadSession) error {
+	resultsPath := "results.txt"
+
+	// Open in append mode, create if doesn't exist
+	f, err := os.OpenFile(resultsPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open results.txt: %v", err)
+	}
+	defer f.Close()
+
+	w := bufio.NewWriter(f)
+	defer w.Flush()
+
+	// Session separator (for multiple sessions in same file)
+	fmt.Fprintf(w, "\n%s\n", strings.Repeat("=", 80))
+	fmt.Fprintf(w, "TikTok Video Downloader - Session Results\n")
+	fmt.Fprintf(w, "Generated: %s\n", session.EndTime.Format("2006-01-02 15:04:05"))
+	fmt.Fprintf(w, "Duration: %s\n", formatDuration(int(session.EndTime.Sub(session.StartTime).Seconds())))
+	fmt.Fprintf(w, "%s\n\n", strings.Repeat("=", 80))
+
+	// Summary
+	fmt.Fprintf(w, "SUMMARY\n")
+	fmt.Fprintf(w, "=======\n")
+	fmt.Fprintf(w, "Total Videos Attempted: %d\n", session.TotalAttempted)
+	fmt.Fprintf(w, "Successfully Downloaded: %d\n", session.TotalSuccess)
+	fmt.Fprintf(w, "Failed: %d\n\n", session.TotalFailed)
+
+	if session.TotalFailed == 0 {
+		fmt.Fprintf(w, "All videos downloaded successfully!\n")
+		return nil
+	}
+
+	// Failed downloads
+	fmt.Fprintf(w, "FAILED DOWNLOADS\n")
+	fmt.Fprintf(w, "================\n\n")
+
+	for _, col := range session.Collections {
+		if len(col.FailureDetails) == 0 {
+			continue
+		}
+
+		fmt.Fprintf(w, "Collection: %s (%d failures)\n", col.Name, len(col.FailureDetails))
+		fmt.Fprintf(w, "%s\n\n", strings.Repeat("-", 50))
+
+		for i, failure := range col.FailureDetails {
+			fmt.Fprintf(w, "%d. Video ID: %s\n", i+1, failure.VideoID)
+			fmt.Fprintf(w, "   URL: %s\n", failure.VideoURL)
+			fmt.Fprintf(w, "   Error Type: %s\n", failure.ErrorType.String())
+			fmt.Fprintf(w, "   Error: %s\n\n", failure.ErrorMessage)
+		}
+	}
+
+	// Troubleshooting tips
+	fmt.Fprintf(w, "\nTROUBLESHOOTING TIPS\n")
+	fmt.Fprintf(w, "====================\n")
+	writeTroubleshootingTips(w, session)
+
+	return nil
+}
+
+// writeTroubleshootingTips writes context-specific troubleshooting advice
+func writeTroubleshootingTips(w *bufio.Writer, session *DownloadSession) {
+	// Count error types
+	errorCounts := make(map[ErrorType]int)
+	for _, col := range session.Collections {
+		for _, failure := range col.FailureDetails {
+			errorCounts[failure.ErrorType]++
+		}
+	}
+
+	// Write tips for each encountered error type
+	if count := errorCounts[ErrorIPBlocked]; count > 0 {
+		fmt.Fprintf(w, "IP Blocked (%d videos):\n", count)
+		fmt.Fprintf(w, "  - Your IP may be rate-limited by TikTok\n")
+		fmt.Fprintf(w, "  - Try again after waiting 30-60 minutes\n")
+		fmt.Fprintf(w, "  - Consider using a VPN or different network\n\n")
+	}
+
+	if count := errorCounts[ErrorAuthRequired]; count > 0 {
+		fmt.Fprintf(w, "Authentication Required (%d videos):\n", count)
+		fmt.Fprintf(w, "  - These videos require login to view\n")
+		fmt.Fprintf(w, "  - You may need to download manually while logged in\n\n")
+	}
+
+	if count := errorCounts[ErrorNotAvailable]; count > 0 {
+		fmt.Fprintf(w, "Not Available (%d videos):\n", count)
+		fmt.Fprintf(w, "  - Videos may be deleted, private, or region-locked\n")
+		fmt.Fprintf(w, "  - Check if the video still exists by opening the URL\n\n")
+	}
+
+	if count := errorCounts[ErrorNetworkTimeout]; count > 0 {
+		fmt.Fprintf(w, "Network Timeout (%d videos):\n", count)
+		fmt.Fprintf(w, "  - Check your internet connection\n")
+		fmt.Fprintf(w, "  - Retry the download session\n\n")
+	}
 }
 
 // runYtdlp runs the yt-dlp command for the user
-func runYtdlp(psPrefix, outputName string, organizeByCollection, skipThumbnails bool) {
-	runYtdlpWithRunner(&RealCommandRunner{}, psPrefix, outputName, organizeByCollection, skipThumbnails)
+func runYtdlp(psPrefix, outputName string, organizeByCollection, skipThumbnails bool, entries []VideoEntry) (*CollectionResult, error) {
+	return runYtdlpWithRunner(&RealCommandRunner{}, psPrefix, outputName, organizeByCollection, skipThumbnails, entries)
 }
 
 // runYtdlpWithRunner allows dependency injection for testing
-func runYtdlpWithRunner(runner CommandRunner, psPrefix, outputName string, organizeByCollection, skipThumbnails bool) {
+func runYtdlpWithRunner(runner CommandRunner, psPrefix, outputName string, organizeByCollection, skipThumbnails bool, entries []VideoEntry) (*CollectionResult, error) {
 	fmt.Println("[*] Running yt-dlp now...")
 	cmdStr := fmt.Sprintf("%syt-dlp.exe", psPrefix)
 
@@ -388,11 +681,29 @@ func runYtdlpWithRunner(runner CommandRunner, psPrefix, outputName string, organ
 		args = append(args, "--write-thumbnail")
 	}
 
-	if err := runner.Run(cmdStr, args...); err != nil {
-		fmt.Printf("[!!!] Error running yt-dlp: %v\n", err)
-	} else {
-		fmt.Println("[*] yt-dlp completed successfully.")
+	// Execute and capture output
+	output, err := runner.Run(cmdStr, args...)
+
+	// Parse output to extract failures
+	failures := parseYtdlpOutput(output.Combined, entries)
+
+	// Build result summary
+	result := &CollectionResult{
+		Name:           filepath.Base(filepath.Dir(outputName)),
+		Attempted:      len(entries),
+		Failed:         len(failures),
+		Success:        len(entries) - len(failures),
+		FailureDetails: failures,
 	}
+
+	if err != nil || len(failures) > 0 {
+		fmt.Printf("[!] Download completed with %d failures out of %d videos.\n",
+			result.Failed, result.Attempted)
+	} else {
+		fmt.Printf("[*] Successfully downloaded all %d videos.\n", result.Success)
+	}
+
+	return result, err
 }
 
 // HTML template for the visual index browser
@@ -448,7 +759,7 @@ func writeHTMLIndex(dir string, index *CollectionIndex) error {
 // generateCollectionIndex creates JSON and HTML indexes for a collection after download.
 // It enriches entries with metadata from yt-dlp's .info.json files and generates
 // both index.json (machine-readable) and index.html (visual browser) files.
-func generateCollectionIndex(collectionDir string, entries []VideoEntry) error {
+func generateCollectionIndex(collectionDir string, entries []VideoEntry, failures []FailureDetail) error {
 	// 1. Scan for .info.json files in the directory
 	infoFiles, err := filepath.Glob(filepath.Join(collectionDir, "*.info.json"))
 	if err != nil {
@@ -466,11 +777,17 @@ func generateCollectionIndex(collectionDir string, entries []VideoEntry) error {
 		infoMap[info.ID] = info
 	}
 
-	// 3. Create a copy of entries to avoid mutating the input slice
+	// 3. Build failure map for quick lookup
+	failureMap := make(map[string]string)
+	for _, f := range failures {
+		failureMap[f.VideoID] = f.ErrorMessage
+	}
+
+	// 4. Create a copy of entries to avoid mutating the input slice
 	enrichedEntries := make([]VideoEntry, len(entries))
 	copy(enrichedEntries, entries)
 
-	// 4. Enrich entries with metadata
+	// 5. Enrich entries with metadata
 	for i := range enrichedEntries {
 		videoID := extractVideoID(enrichedEntries[i].Link)
 		enrichedEntries[i].VideoID = videoID
@@ -503,7 +820,12 @@ func generateCollectionIndex(collectionDir string, entries []VideoEntry) error {
 			}
 		} else {
 			enrichedEntries[i].Downloaded = false
-			enrichedEntries[i].DownloadError = "Video not downloaded or metadata unavailable"
+			// Use actual error message if available
+			if errMsg, ok := failureMap[videoID]; ok {
+				enrichedEntries[i].DownloadError = errMsg
+			} else {
+				enrichedEntries[i].DownloadError = "Video not downloaded or metadata unavailable"
+			}
 		}
 	}
 
@@ -667,7 +989,8 @@ func main() {
 			}
 			for collection := range collections {
 				collectionEntries := getEntriesForCollection(videoEntries, collection)
-				if err := generateCollectionIndex(collection, collectionEntries); err != nil {
+				// No download, so no failure details
+				if err := generateCollectionIndex(collection, collectionEntries, nil); err != nil {
 					fmt.Printf("[!] Warning: Failed to generate index for %s: %v\n", collection, err)
 				} else {
 					fmt.Printf("[*] Generated index.html and index.json for %s\n", collection)
@@ -679,7 +1002,8 @@ func main() {
 			if err != nil {
 				dir = "."
 			}
-			if err := generateCollectionIndex(dir, videoEntries); err != nil {
+			// No download, so no failure details
+			if err := generateCollectionIndex(dir, videoEntries, nil); err != nil {
 				fmt.Printf("[!] Warning: Failed to generate index: %v\n", err)
 			} else {
 				fmt.Println("[*] Generated index.html and index.json")
@@ -744,6 +1068,12 @@ func main() {
 	response, _ := answer.ReadString('\n')
 	response = strings.TrimSpace(strings.ToLower(response))
 	if response == "y" || response == "yes" {
+		// Initialize download session tracking
+		session := &DownloadSession{
+			StartTime:   time.Now(),
+			Collections: make([]CollectionResult, 0),
+		}
+
 		if config.OrganizeByCollection {
 			// Run yt-dlp for each collection
 			collections := make(map[string]bool)
@@ -754,30 +1084,63 @@ func main() {
 				// Use collection-specific filename
 				collectionFilename := getOutputFilename(collection)
 				collectionOutputName := filepath.Join(collection, collectionFilename)
-				fmt.Printf("[*] Processing collection: %s\n", collection)
-				runYtdlp(psPrefix, collectionOutputName, config.OrganizeByCollection, config.SkipThumbnails)
-
-				// Generate index after download completes
 				collectionEntries := getEntriesForCollection(videoEntries, collection)
-				if err := generateCollectionIndex(collection, collectionEntries); err != nil {
+
+				fmt.Printf("[*] Processing collection: %s\n", collection)
+				result, _ := runYtdlp(psPrefix, collectionOutputName, config.OrganizeByCollection, config.SkipThumbnails, collectionEntries)
+
+				// Track session results
+				if result != nil {
+					session.Collections = append(session.Collections, *result)
+				}
+
+				// Generate index after download completes (pass failures for error details)
+				var failures []FailureDetail
+				if result != nil {
+					failures = result.FailureDetails
+				}
+				if err := generateCollectionIndex(collection, collectionEntries, failures); err != nil {
 					fmt.Printf("[!] Warning: Failed to generate index for %s: %v\n", collection, err)
 				} else {
 					fmt.Printf("[*] Generated index.html and index.json for %s\n", collection)
 				}
 			}
 		} else {
-			runYtdlp(psPrefix, config.OutputName, config.OrganizeByCollection, config.SkipThumbnails)
+			// Flat structure
+			result, _ := runYtdlp(psPrefix, config.OutputName, config.OrganizeByCollection, config.SkipThumbnails, videoEntries)
+
+			// Track session results
+			if result != nil {
+				session.Collections = append(session.Collections, *result)
+			}
 
 			// Generate index for flat structure in current directory
 			dir, err := filepath.Abs(".")
 			if err != nil {
 				dir = "."
 			}
-			if err := generateCollectionIndex(dir, videoEntries); err != nil {
+			var failures []FailureDetail
+			if result != nil {
+				failures = result.FailureDetails
+			}
+			if err := generateCollectionIndex(dir, videoEntries, failures); err != nil {
 				fmt.Printf("[!] Warning: Failed to generate index: %v\n", err)
 			} else {
 				fmt.Println("[*] Generated index.html and index.json")
 			}
+		}
+
+		// Finalize session
+		session.EndTime = time.Now()
+		session.TotalAttempted, session.TotalSuccess, session.TotalFailed =
+			calculateSessionTotals(session.Collections)
+
+		// Display summary
+		printSessionSummary(session)
+
+		// Write results.txt
+		if err := writeResultsFile(session); err != nil {
+			fmt.Printf("[!] Warning: Failed to write results.txt: %v\n", err)
 		}
 	}
 }

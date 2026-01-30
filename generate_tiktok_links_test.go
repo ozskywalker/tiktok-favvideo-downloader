@@ -271,12 +271,21 @@ type MockCommand struct {
 	Args []string
 }
 
-func (m *MockCommandRunner) Run(name string, args ...string) error {
+func (m *MockCommandRunner) Run(name string, args ...string) (CapturedOutput, error) {
 	m.Commands = append(m.Commands, MockCommand{Name: name, Args: args})
-	if m.ShouldFail {
-		return fmt.Errorf("mock command failed")
+
+	// Return mock output for testing
+	output := CapturedOutput{
+		Combined: []string{
+			"[download] Downloading item 1 of 5",
+			"ERROR: [TikTok] 123456: Test error message",
+		},
 	}
-	return nil
+
+	if m.ShouldFail {
+		return output, fmt.Errorf("mock command failed")
+	}
+	return output, nil
 }
 
 // TestRunYtdlpWithRunner tests the runYtdlp function with mocked command execution
@@ -347,8 +356,13 @@ func TestRunYtdlpWithRunner(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			mockRunner := &MockCommandRunner{ShouldFail: tt.shouldFail}
 
+			// Create test entries for the function
+			testEntries := []VideoEntry{
+				{Link: "https://www.tiktok.com/@test/video/123456", VideoID: "123456"},
+			}
+
 			// Capture output for verification
-			runYtdlpWithRunner(mockRunner, tt.psPrefix, tt.outputName, tt.organizeByCollection, tt.skipThumbnails)
+			runYtdlpWithRunner(mockRunner, tt.psPrefix, tt.outputName, tt.organizeByCollection, tt.skipThumbnails, testEntries)
 
 			// Verify command was called correctly
 			if len(mockRunner.Commands) != 1 {
@@ -1330,7 +1344,7 @@ func TestGenerateCollectionIndex(t *testing.T) {
 		originalTitle0 := entries[0].Title
 
 		// Generate index
-		err = generateCollectionIndex(tmpDir, entries)
+		err = generateCollectionIndex(tmpDir, entries, nil)
 		if err != nil {
 			t.Fatalf("generateCollectionIndex failed: %v", err)
 		}
@@ -1406,7 +1420,7 @@ func TestGenerateCollectionIndex(t *testing.T) {
 
 		entries := []VideoEntry{}
 
-		err = generateCollectionIndex(tmpDir, entries)
+		err = generateCollectionIndex(tmpDir, entries, nil)
 		if err != nil {
 			t.Fatalf("generateCollectionIndex failed on empty collection: %v", err)
 		}
@@ -1434,7 +1448,7 @@ func TestGenerateCollectionIndex(t *testing.T) {
 			},
 		}
 
-		err = generateCollectionIndex(tmpDir, entries)
+		err = generateCollectionIndex(tmpDir, entries, nil)
 		if err != nil {
 			t.Fatalf("generateCollectionIndex failed: %v", err)
 		}
