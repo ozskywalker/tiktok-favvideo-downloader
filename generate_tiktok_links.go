@@ -558,53 +558,53 @@ func writeResultsFile(session *DownloadSession) error {
 	if err != nil {
 		return fmt.Errorf("failed to open results.txt: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	w := bufio.NewWriter(f)
-	defer w.Flush()
+	defer func() { _ = w.Flush() }()
 
 	// Session separator (for multiple sessions in same file)
-	fmt.Fprintf(w, "\n%s\n", strings.Repeat("=", 80))
-	fmt.Fprintf(w, "TikTok Video Downloader - Session Results\n")
-	fmt.Fprintf(w, "Generated: %s\n", session.EndTime.Format("2006-01-02 15:04:05"))
-	fmt.Fprintf(w, "Duration: %s\n", formatDuration(int(session.EndTime.Sub(session.StartTime).Seconds())))
-	fmt.Fprintf(w, "%s\n\n", strings.Repeat("=", 80))
+	_, _ = fmt.Fprintf(w, "\n%s\n", strings.Repeat("=", 80))
+	_, _ = fmt.Fprintf(w, "TikTok Video Downloader - Session Results\n")
+	_, _ = fmt.Fprintf(w, "Generated: %s\n", session.EndTime.Format("2006-01-02 15:04:05"))
+	_, _ = fmt.Fprintf(w, "Duration: %s\n", formatDuration(int(session.EndTime.Sub(session.StartTime).Seconds())))
+	_, _ = fmt.Fprintf(w, "%s\n\n", strings.Repeat("=", 80))
 
 	// Summary
-	fmt.Fprintf(w, "SUMMARY\n")
-	fmt.Fprintf(w, "=======\n")
-	fmt.Fprintf(w, "Total Videos Attempted: %d\n", session.TotalAttempted)
-	fmt.Fprintf(w, "Successfully Downloaded: %d\n", session.TotalSuccess)
-	fmt.Fprintf(w, "Failed: %d\n\n", session.TotalFailed)
+	_, _ = fmt.Fprintf(w, "SUMMARY\n")
+	_, _ = fmt.Fprintf(w, "=======\n")
+	_, _ = fmt.Fprintf(w, "Total Videos Attempted: %d\n", session.TotalAttempted)
+	_, _ = fmt.Fprintf(w, "Successfully Downloaded: %d\n", session.TotalSuccess)
+	_, _ = fmt.Fprintf(w, "Failed: %d\n\n", session.TotalFailed)
 
 	if session.TotalFailed == 0 {
-		fmt.Fprintf(w, "All videos downloaded successfully!\n")
+		_, _ = fmt.Fprintf(w, "All videos downloaded successfully!\n")
 		return nil
 	}
 
 	// Failed downloads
-	fmt.Fprintf(w, "FAILED DOWNLOADS\n")
-	fmt.Fprintf(w, "================\n\n")
+	_, _ = fmt.Fprintf(w, "FAILED DOWNLOADS\n")
+	_, _ = fmt.Fprintf(w, "================\n\n")
 
 	for _, col := range session.Collections {
 		if len(col.FailureDetails) == 0 {
 			continue
 		}
 
-		fmt.Fprintf(w, "Collection: %s (%d failures)\n", col.Name, len(col.FailureDetails))
-		fmt.Fprintf(w, "%s\n\n", strings.Repeat("-", 50))
+		_, _ = fmt.Fprintf(w, "Collection: %s (%d failures)\n", col.Name, len(col.FailureDetails))
+		_, _ = fmt.Fprintf(w, "%s\n\n", strings.Repeat("-", 50))
 
 		for i, failure := range col.FailureDetails {
-			fmt.Fprintf(w, "%d. Video ID: %s\n", i+1, failure.VideoID)
-			fmt.Fprintf(w, "   URL: %s\n", failure.VideoURL)
-			fmt.Fprintf(w, "   Error Type: %s\n", failure.ErrorType.String())
-			fmt.Fprintf(w, "   Error: %s\n\n", failure.ErrorMessage)
+			_, _ = fmt.Fprintf(w, "%d. Video ID: %s\n", i+1, failure.VideoID)
+			_, _ = fmt.Fprintf(w, "   URL: %s\n", failure.VideoURL)
+			_, _ = fmt.Fprintf(w, "   Error Type: %s\n", failure.ErrorType.String())
+			_, _ = fmt.Fprintf(w, "   Error: %s\n\n", failure.ErrorMessage)
 		}
 	}
 
 	// Troubleshooting tips
-	fmt.Fprintf(w, "\nTROUBLESHOOTING TIPS\n")
-	fmt.Fprintf(w, "====================\n")
+	_, _ = fmt.Fprintf(w, "\nTROUBLESHOOTING TIPS\n")
+	_, _ = fmt.Fprintf(w, "====================\n")
 	writeTroubleshootingTips(w, session)
 
 	return nil
@@ -622,28 +622,28 @@ func writeTroubleshootingTips(w *bufio.Writer, session *DownloadSession) {
 
 	// Write tips for each encountered error type
 	if count := errorCounts[ErrorIPBlocked]; count > 0 {
-		fmt.Fprintf(w, "IP Blocked (%d videos):\n", count)
-		fmt.Fprintf(w, "  - Your IP may be rate-limited by TikTok\n")
-		fmt.Fprintf(w, "  - Try again after waiting 30-60 minutes\n")
-		fmt.Fprintf(w, "  - Consider using a VPN or different network\n\n")
+		_, _ = fmt.Fprintf(w, "IP Blocked (%d videos):\n", count)
+		_, _ = fmt.Fprintf(w, "  - Your IP may be rate-limited by TikTok\n")
+		_, _ = fmt.Fprintf(w, "  - Try again after waiting 30-60 minutes\n")
+		_, _ = fmt.Fprintf(w, "  - Consider using a VPN or different network\n\n")
 	}
 
 	if count := errorCounts[ErrorAuthRequired]; count > 0 {
-		fmt.Fprintf(w, "Authentication Required (%d videos):\n", count)
-		fmt.Fprintf(w, "  - These videos require login to view\n")
-		fmt.Fprintf(w, "  - You may need to download manually while logged in\n\n")
+		_, _ = fmt.Fprintf(w, "Authentication Required (%d videos):\n", count)
+		_, _ = fmt.Fprintf(w, "  - These videos require login to view\n")
+		_, _ = fmt.Fprintf(w, "  - You may need to download manually while logged in\n\n")
 	}
 
 	if count := errorCounts[ErrorNotAvailable]; count > 0 {
-		fmt.Fprintf(w, "Not Available (%d videos):\n", count)
-		fmt.Fprintf(w, "  - Videos may be deleted, private, or region-locked\n")
-		fmt.Fprintf(w, "  - Check if the video still exists by opening the URL\n\n")
+		_, _ = fmt.Fprintf(w, "Not Available (%d videos):\n", count)
+		_, _ = fmt.Fprintf(w, "  - Videos may be deleted, private, or region-locked\n")
+		_, _ = fmt.Fprintf(w, "  - Check if the video still exists by opening the URL\n\n")
 	}
 
 	if count := errorCounts[ErrorNetworkTimeout]; count > 0 {
-		fmt.Fprintf(w, "Network Timeout (%d videos):\n", count)
-		fmt.Fprintf(w, "  - Check your internet connection\n")
-		fmt.Fprintf(w, "  - Retry the download session\n\n")
+		_, _ = fmt.Fprintf(w, "Network Timeout (%d videos):\n", count)
+		_, _ = fmt.Fprintf(w, "  - Check your internet connection\n")
+		_, _ = fmt.Fprintf(w, "  - Retry the download session\n\n")
 	}
 }
 

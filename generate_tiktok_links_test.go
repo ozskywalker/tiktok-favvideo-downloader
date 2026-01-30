@@ -14,85 +14,6 @@ import (
 
 // Test utility helpers to reduce code duplication
 
-// setupTestDir creates a temporary directory for testing and returns a cleanup function
-func setupTestDir(t *testing.T) (string, func()) {
-	t.Helper()
-	tmpDir, err := os.MkdirTemp("", "test_*")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-	return tmpDir, func() { _ = os.RemoveAll(tmpDir) }
-}
-
-// setupTestDirWithChdir creates a temporary directory, changes to it, and returns cleanup function
-func setupTestDirWithChdir(t *testing.T) (string, func()) {
-	t.Helper()
-	tmpDir, cleanup := setupTestDir(t)
-
-	oldCwd, err := os.Getwd()
-	if err != nil {
-		cleanup()
-		t.Fatalf("failed to get working directory: %v", err)
-	}
-
-	if err := os.Chdir(tmpDir); err != nil {
-		cleanup()
-		t.Fatalf("failed to chdir: %v", err)
-	}
-
-	return tmpDir, func() {
-		_ = os.Chdir(oldCwd)
-		cleanup()
-	}
-}
-
-// createMockInfoJSON creates a mock .info.json file for testing
-func createMockInfoJSON(t *testing.T, dir, videoID, title, filename string) {
-	t.Helper()
-	infoJSON := fmt.Sprintf(`{
-		"id": "%s",
-		"title": "%s",
-		"uploader": "TestUser",
-		"uploader_id": "testuser123",
-		"upload_date": "20260129",
-		"description": "Test description",
-		"duration": 45,
-		"view_count": 1500000,
-		"like_count": 50000,
-		"thumbnail": "https://example.com/thumb.jpg",
-		"filename": "%s"
-	}`, videoID, title, filename)
-
-	infoPath := filepath.Join(dir, filename+".info.json")
-	if err := os.WriteFile(infoPath, []byte(infoJSON), 0644); err != nil {
-		t.Fatalf("failed to write info.json: %v", err)
-	}
-}
-
-// createMockVideoFile creates a mock video file for testing
-func createMockVideoFile(t *testing.T, dir, filename string) {
-	t.Helper()
-	videoPath := filepath.Join(dir, filename)
-	if err := os.WriteFile(videoPath, []byte("fake video data"), 0644); err != nil {
-		t.Fatalf("failed to write video file: %v", err)
-	}
-}
-
-// readCollectionIndex reads and parses a collection index.json file
-func readCollectionIndex(t *testing.T, dir string) *CollectionIndex {
-	t.Helper()
-	indexPath := filepath.Join(dir, "index.json")
-	data, err := os.ReadFile(indexPath)
-	if err != nil {
-		t.Fatalf("failed to read index.json: %v", err)
-	}
-
-	var index CollectionIndex
-	if err := json.Unmarshal(data, &index); err != nil {
-		t.Fatalf("failed to parse index.json: %v", err)
-	}
-	return &index
-}
 
 // TestIsRunningInPowershell checks if isRunningInPowershell returns
 // true/false based on the environment variable. We manipulate the environment.
@@ -444,7 +365,7 @@ func TestRunYtdlpWithRunner(t *testing.T) {
 			}
 
 			// Capture output for verification
-			runYtdlpWithRunner(mockRunner, tt.psPrefix, tt.outputName, tt.organizeByCollection, tt.skipThumbnails, testEntries)
+			_, _ = runYtdlpWithRunner(mockRunner, tt.psPrefix, tt.outputName, tt.organizeByCollection, tt.skipThumbnails, testEntries)
 
 			// Verify command was called correctly
 			if len(mockRunner.Commands) != 1 {
@@ -1846,7 +1767,7 @@ func TestIndexOnlyMode(t *testing.T) {
 
 		for collection := range collections {
 			collectionEntries := getEntriesForCollection(videoEntries, collection)
-			if err := generateCollectionIndex(collection, collectionEntries); err != nil {
+			if err := generateCollectionIndex(collection, collectionEntries, []FailureDetail{}); err != nil {
 				t.Fatalf("generateCollectionIndex failed: %v", err)
 			}
 		}
@@ -1929,7 +1850,7 @@ func TestIndexOnlyMode(t *testing.T) {
 			dir = "."
 		}
 
-		if err := generateCollectionIndex(dir, videoEntries); err != nil {
+		if err := generateCollectionIndex(dir, videoEntries, []FailureDetail{}); err != nil {
 			t.Fatalf("generateCollectionIndex failed: %v", err)
 		}
 
@@ -1978,7 +1899,7 @@ func TestIndexOnlyMode(t *testing.T) {
 		}
 
 		collectionEntries := getEntriesForCollection(videoEntries, "favorites")
-		if err := generateCollectionIndex("favorites", collectionEntries); err != nil {
+		if err := generateCollectionIndex("favorites", collectionEntries, []FailureDetail{}); err != nil {
 			t.Fatalf("generateCollectionIndex failed: %v", err)
 		}
 
@@ -2189,7 +2110,7 @@ func TestVideoIDValidation(t *testing.T) {
 	}
 
 	// Generate index - should warn about invalid URLs
-	err = generateCollectionIndex(tmpDir, entries)
+	err = generateCollectionIndex(tmpDir, entries, []FailureDetail{})
 	if err != nil {
 		t.Fatalf("generateCollectionIndex failed: %v", err)
 	}
@@ -2259,7 +2180,7 @@ func TestThumbnailDetection(t *testing.T) {
 		}
 
 		entries := []VideoEntry{{Link: "https://www.tiktok.com/@user/video/123456"}}
-		if err := generateCollectionIndex(tmpDir, entries); err != nil {
+		if err := generateCollectionIndex(tmpDir, entries, []FailureDetail{}); err != nil {
 			t.Fatal(err)
 		}
 
@@ -2295,7 +2216,7 @@ func TestThumbnailDetection(t *testing.T) {
 		_ = os.WriteFile(filepath.Join(tmpDir, "20260129_789012_Test.mp4"), []byte("video"), 0644)
 
 		entries := []VideoEntry{{Link: "https://www.tiktok.com/@user/video/789012"}}
-		if err := generateCollectionIndex(tmpDir, entries); err != nil {
+		if err := generateCollectionIndex(tmpDir, entries, []FailureDetail{}); err != nil {
 			t.Fatal(err)
 		}
 
@@ -2331,7 +2252,7 @@ func TestThumbnailDetection(t *testing.T) {
 		_ = os.WriteFile(filepath.Join(tmpDir, "20260129_345678_Test.mp4"), []byte("video"), 0644)
 
 		entries := []VideoEntry{{Link: "https://www.tiktok.com/@user/video/345678"}}
-		if err := generateCollectionIndex(tmpDir, entries); err != nil {
+		if err := generateCollectionIndex(tmpDir, entries, []FailureDetail{}); err != nil {
 			t.Fatal(err)
 		}
 
@@ -2366,7 +2287,7 @@ func TestThumbnailDetection(t *testing.T) {
 		_ = os.WriteFile(filepath.Join(tmpDir, "20260129_999888_Test.mp4"), []byte("video"), 0644)
 
 		entries := []VideoEntry{{Link: "https://www.tiktok.com/@user/video/999888"}}
-		if err := generateCollectionIndex(tmpDir, entries); err != nil {
+		if err := generateCollectionIndex(tmpDir, entries, []FailureDetail{}); err != nil {
 			t.Fatal(err)
 		}
 
@@ -2404,7 +2325,7 @@ func TestPartialDownloadHandling(t *testing.T) {
 		}
 
 		entries := []VideoEntry{{Link: "https://www.tiktok.com/@user/video/111222"}}
-		if err := generateCollectionIndex(tmpDir, entries); err != nil {
+		if err := generateCollectionIndex(tmpDir, entries, []FailureDetail{}); err != nil {
 			t.Fatal(err)
 		}
 
@@ -2441,7 +2362,7 @@ func TestPartialDownloadHandling(t *testing.T) {
 
 		// Don't create the video file - only .info.json exists
 		entries := []VideoEntry{{Link: "https://www.tiktok.com/@user/video/333444"}}
-		if err := generateCollectionIndex(tmpDir, entries); err != nil {
+		if err := generateCollectionIndex(tmpDir, entries, []FailureDetail{}); err != nil {
 			t.Fatal(err)
 		}
 
@@ -2474,7 +2395,7 @@ func TestPartialDownloadHandling(t *testing.T) {
 		}
 
 		entries := []VideoEntry{{Link: "https://www.tiktok.com/@user/video/555666"}}
-		if err := generateCollectionIndex(tmpDir, entries); err != nil {
+		if err := generateCollectionIndex(tmpDir, entries, []FailureDetail{}); err != nil {
 			t.Fatal(err)
 		}
 
@@ -2512,7 +2433,7 @@ func TestPartialDownloadHandling(t *testing.T) {
 		}
 
 		entries := []VideoEntry{{Link: "https://www.tiktok.com/@user/video/777888"}}
-		if err := generateCollectionIndex(tmpDir, entries); err != nil {
+		if err := generateCollectionIndex(tmpDir, entries, []FailureDetail{}); err != nil {
 			t.Fatal(err)
 		}
 
@@ -2554,7 +2475,7 @@ func TestSpecialCharactersInIndex(t *testing.T) {
 		_ = os.WriteFile(filepath.Join(tmpDir, "20260129_9988776655_Fun.mp4"), []byte("video"), 0644)
 
 		entries := []VideoEntry{{Link: "https://www.tiktok.com/@user/video/9988776655"}}
-		if err := generateCollectionIndex(tmpDir, entries); err != nil {
+		if err := generateCollectionIndex(tmpDir, entries, []FailureDetail{}); err != nil {
 			t.Fatal(err)
 		}
 
@@ -2596,7 +2517,7 @@ func TestSpecialCharactersInIndex(t *testing.T) {
 		_ = os.WriteFile(filepath.Join(tmpDir, "20260129_1122334455_Test.mp4"), []byte("video"), 0644)
 
 		entries := []VideoEntry{{Link: "https://www.tiktok.com/@user/video/1122334455"}}
-		if err := generateCollectionIndex(tmpDir, entries); err != nil {
+		if err := generateCollectionIndex(tmpDir, entries, []FailureDetail{}); err != nil {
 			t.Fatal(err)
 		}
 
@@ -2635,7 +2556,7 @@ func TestSpecialCharactersInIndex(t *testing.T) {
 		_ = os.WriteFile(filepath.Join(tmpDir, "20260129_6677889900_Test.mp4"), []byte("video"), 0644)
 
 		entries := []VideoEntry{{Link: "https://www.tiktok.com/@user/video/6677889900"}}
-		if err := generateCollectionIndex(tmpDir, entries); err != nil {
+		if err := generateCollectionIndex(tmpDir, entries, []FailureDetail{}); err != nil {
 			t.Fatalf("should handle very long strings: %v", err)
 		}
 
@@ -2669,7 +2590,7 @@ func TestSpecialCharactersInIndex(t *testing.T) {
 		_ = os.WriteFile(filepath.Join(tmpDir, "20260129_2233445566_Test.mp4"), []byte("video"), 0644)
 
 		entries := []VideoEntry{{Link: "https://www.tiktok.com/@user/video/2233445566"}}
-		if err := generateCollectionIndex(tmpDir, entries); err != nil {
+		if err := generateCollectionIndex(tmpDir, entries, []FailureDetail{}); err != nil {
 			t.Fatalf("should handle RTL text: %v", err)
 		}
 
