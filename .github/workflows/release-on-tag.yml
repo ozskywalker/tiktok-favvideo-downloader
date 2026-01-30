@@ -44,11 +44,12 @@ jobs:
             -ldflags="-X 'main.version=${{ steps.get_version.outputs.VERSION }}'" \
             -o tiktok-favvideo-downloader-ARM64.exe .
 
-      # 7. Create a new GitHub release with this version
+      # 7. Create a new draft GitHub release with this version
       - name: Publish release
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
         with:
+          draft: true
           files: |
             tiktok-favvideo-downloader-x86_64.exe
             tiktok-favvideo-downloader-ARM64.exe
