@@ -17,16 +17,16 @@ import (
 func TestIsRunningInPowershell(t *testing.T) {
 	// Backup original PSModulePath
 	originalPSModulePath := os.Getenv("PSModulePath")
-	defer os.Setenv("PSModulePath", originalPSModulePath)
+	defer func() { _ = os.Setenv("PSModulePath", originalPSModulePath) }()
 
 	// Case 1: Contains "PowerShell"
-	os.Setenv("PSModulePath", "C:\\Windows\\PowerShell\\Modules")
+	_ = os.Setenv("PSModulePath", "C:\\Windows\\PowerShell\\Modules")
 	if !isRunningInPowershell() {
 		t.Error("expected isRunningInPowershell to return true when PSModulePath contains 'PowerShell'")
 	}
 
 	// Case 2: Does not contain "PowerShell"
-	os.Setenv("PSModulePath", "SomeRandomPath")
+	_ = os.Setenv("PSModulePath", "SomeRandomPath")
 	if isRunningInPowershell() {
 		t.Error("expected isRunningInPowershell to return false when PSModulePath does NOT contain 'PowerShell'")
 	}
@@ -48,7 +48,7 @@ func TestParseFavoriteVideosFromFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create temp file: %v", err)
 	}
-	defer os.Remove(tmpFile.Name())
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
 
 	// Write JSON data that includes both favorited and liked videos
 	jsonContent := `{
@@ -70,7 +70,7 @@ func TestParseFavoriteVideosFromFile(t *testing.T) {
 	if _, err := tmpFile.WriteString(jsonContent); err != nil {
 		t.Fatalf("failed to write to temp file: %v", err)
 	}
-	tmpFile.Close()
+	_ = tmpFile.Close()
 
 	// Test case: only favorited videos
 	videoEntries, err := parseFavoriteVideosFromFile(tmpFile.Name(), false)
@@ -123,8 +123,8 @@ func TestWriteFavoriteVideosToFile(t *testing.T) {
 		t.Fatalf("failed to create temp file: %v", err)
 	}
 	outputName := tmpOut.Name()
-	tmpOut.Close()
-	defer os.Remove(outputName)
+	_ = tmpOut.Close()
+	defer func() { _ = os.Remove(outputName) }()
 
 	// We'll write these URLs
 	urls := []string{"https://abc", "https://def", "https://xyz"}
@@ -162,7 +162,7 @@ func TestGetOrDownloadYtdlp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir) // cleanup
+	defer func() { _ = os.RemoveAll(tmpDir) }() // cleanup
 	oldCwd, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("failed to get working directory: %v", err)
@@ -193,7 +193,7 @@ func TestGetOrDownloadYtdlp(t *testing.T) {
 	}
 
 	// 3. Remove the file to force a download scenario
-	os.Remove(exeName)
+	_ = os.Remove(exeName)
 
 	// Create a mock release JSON
 	mockReleaseJSON := `{
@@ -450,12 +450,12 @@ func TestParseFavoriteVideosFromFileErrorScenarios(t *testing.T) {
 			if err != nil {
 				t.Fatalf("failed to create temp file: %v", err)
 			}
-			defer os.Remove(tmpFile.Name())
+			defer func() { _ = os.Remove(tmpFile.Name()) }()
 
 			if _, err := tmpFile.WriteString(tt.jsonContent); err != nil {
 				t.Fatalf("failed to write to temp file: %v", err)
 			}
-			tmpFile.Close()
+			_ = tmpFile.Close()
 
 			_, err = parseFavoriteVideosFromFile(tmpFile.Name(), tt.includeLiked)
 			if tt.expectError && err == nil {
@@ -510,8 +510,8 @@ func TestWriteFavoriteVideosToFileErrorScenarios(t *testing.T) {
 			if err != nil {
 				t.Fatalf("failed to create temp file: %v", err)
 			}
-			tmpFile.Close()
-			defer os.Remove(tmpFile.Name())
+			_ = tmpFile.Close()
+			defer func() { _ = os.Remove(tmpFile.Name()) }()
 
 			// Convert URLs to VideoEntries
 			videoEntries := make([]VideoEntry, len(tt.urls))
@@ -561,14 +561,14 @@ func TestGetOrDownloadYtdlpErrorScenarios(t *testing.T) {
 		{
 			name: "GitHub API returns invalid JSON",
 			serverHandler: func(w http.ResponseWriter, r *http.Request) {
-				w.Write([]byte("invalid json"))
+				_, _ = w.Write([]byte("invalid json"))
 			},
 			expectError: true,
 		},
 		{
 			name: "No yt-dlp.exe asset found",
 			serverHandler: func(w http.ResponseWriter, r *http.Request) {
-				w.Write([]byte(`{"assets": [{"name": "other.exe", "browser_download_url": "http://example.com/other.exe"}]}`))
+				_, _ = w.Write([]byte(`{"assets": [{"name": "other.exe", "browser_download_url": "http://example.com/other.exe"}]}`))
 			},
 			expectError: true,
 		},
@@ -580,13 +580,13 @@ func TestGetOrDownloadYtdlpErrorScenarios(t *testing.T) {
 			if err != nil {
 				t.Fatalf("failed to create temp dir: %v", err)
 			}
-			defer os.RemoveAll(tmpDir)
+			defer func() { _ = os.RemoveAll(tmpDir) }()
 
 			oldCwd, err := os.Getwd()
 			if err != nil {
 				t.Fatalf("failed to get working directory: %v", err)
 			}
-			defer os.Chdir(oldCwd)
+			defer func() { _ = os.Chdir(oldCwd) }()
 
 			if err := os.Chdir(tmpDir); err != nil {
 				t.Fatalf("failed to chdir: %v", err)
@@ -632,13 +632,13 @@ func TestIntegrationWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	oldCwd, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("failed to get working directory: %v", err)
 	}
-	defer os.Chdir(oldCwd)
+	defer func() { _ = os.Chdir(oldCwd) }()
 
 	if err := os.Chdir(tmpDir); err != nil {
 		t.Fatalf("failed to chdir: %v", err)
@@ -765,13 +765,13 @@ func TestMainFunctionArguments(t *testing.T) {
 			if err != nil {
 				t.Fatalf("failed to create temp dir: %v", err)
 			}
-			defer os.RemoveAll(tmpDir)
+			defer func() { _ = os.RemoveAll(tmpDir) }()
 
 			oldCwd, err := os.Getwd()
 			if err != nil {
 				t.Fatalf("failed to get working directory: %v", err)
 			}
-			defer os.Chdir(oldCwd)
+			defer func() { _ = os.Chdir(oldCwd) }()
 
 			if err := os.Chdir(tmpDir); err != nil {
 				t.Fatalf("failed to chdir: %v", err)
@@ -821,7 +821,7 @@ func TestEdgeCasesAndBoundaries(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to create temp file: %v", err)
 		}
-		defer os.Remove(tmpFile.Name())
+		defer func() { _ = os.Remove(tmpFile.Name()) }()
 
 		// Create JSON with many entries
 		var videoList []string
@@ -840,7 +840,7 @@ func TestEdgeCasesAndBoundaries(t *testing.T) {
 		if _, err := tmpFile.WriteString(largeJSON); err != nil {
 			t.Fatalf("failed to write large JSON: %v", err)
 		}
-		tmpFile.Close()
+		_ = tmpFile.Close()
 
 		urls, err := parseFavoriteVideosFromFile(tmpFile.Name(), false)
 		if err != nil {
@@ -857,13 +857,13 @@ func TestEdgeCasesAndBoundaries(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to create temp file: %v", err)
 		}
-		defer os.Remove(tmpFile.Name())
+		defer func() { _ = os.Remove(tmpFile.Name()) }()
 
 		emptyJSON := `{}`
 		if _, err := tmpFile.WriteString(emptyJSON); err != nil {
 			t.Fatalf("failed to write empty JSON: %v", err)
 		}
-		tmpFile.Close()
+		_ = tmpFile.Close()
 
 		urls, err := parseFavoriteVideosFromFile(tmpFile.Name(), false)
 		if err != nil {
@@ -880,13 +880,13 @@ func TestEdgeCasesAndBoundaries(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to create temp file: %v", err)
 		}
-		defer os.Remove(tmpFile.Name())
+		defer func() { _ = os.Remove(tmpFile.Name()) }()
 
 		testJSON := `{"Likes and Favorites": {"Favorite Videos": {"FavoriteVideoList": [{"Link": "https://test.com"}]}}}`
 		if _, err := tmpFile.WriteString(testJSON); err != nil {
 			t.Fatalf("failed to write test JSON: %v", err)
 		}
-		tmpFile.Close()
+		_ = tmpFile.Close()
 
 		// Simulate concurrent access
 		done := make(chan bool, 2)
@@ -910,13 +910,13 @@ func TestEdgeCasesAndBoundaries(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to create temp dir: %v", err)
 		}
-		defer os.RemoveAll(tmpDir)
+		defer func() { _ = os.RemoveAll(tmpDir) }()
 
 		oldCwd, err := os.Getwd()
 		if err != nil {
 			t.Fatalf("failed to get working directory: %v", err)
 		}
-		defer os.Chdir(oldCwd)
+		defer func() { _ = os.Chdir(oldCwd) }()
 
 		if err := os.Chdir(tmpDir); err != nil {
 			t.Fatalf("failed to chdir: %v", err)
@@ -991,12 +991,12 @@ func TestCollectionOrganization(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to create temp dir: %v", err)
 		}
-		defer os.RemoveAll(tmpDir)
+		defer func() { _ = os.RemoveAll(tmpDir) }()
 
 		// Change to temp directory
 		originalDir, _ := os.Getwd()
-		defer os.Chdir(originalDir)
-		os.Chdir(tmpDir)
+		defer func() { _ = os.Chdir(originalDir) }()
+		_ = os.Chdir(tmpDir)
 
 		videoEntries := []VideoEntry{
 			{Link: "https://test1.com", Collection: "favorites"},
@@ -1020,9 +1020,9 @@ func TestCollectionOrganization(t *testing.T) {
 		}
 
 		// Test with organization disabled
-		os.RemoveAll("favorites")
-		os.RemoveAll("liked")
-		os.RemoveAll("custom collection")
+		_ = os.RemoveAll("favorites")
+		_ = os.RemoveAll("liked")
+		_ = os.RemoveAll("custom collection")
 
 		err = createCollectionDirectories(videoEntries, false)
 		if err != nil {
@@ -1044,12 +1044,12 @@ func TestCollectionOrganization(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to create temp dir: %v", err)
 		}
-		defer os.RemoveAll(tmpDir)
+		defer func() { _ = os.RemoveAll(tmpDir) }()
 
 		// Change to temp directory
 		originalDir, _ := os.Getwd()
-		defer os.Chdir(originalDir)
-		os.Chdir(tmpDir)
+		defer func() { _ = os.Chdir(originalDir) }()
+		_ = os.Chdir(tmpDir)
 
 		videoEntries := []VideoEntry{
 			{Link: "https://fav1.com", Collection: "favorites"},
@@ -1184,7 +1184,7 @@ func TestParseInfoJSON(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to create temp file: %v", err)
 		}
-		defer os.Remove(tmpFile.Name())
+		defer func() { _ = os.Remove(tmpFile.Name()) }()
 
 		infoJSON := `{
 			"id": "7600559584901647646",
@@ -1203,7 +1203,7 @@ func TestParseInfoJSON(t *testing.T) {
 		if _, err := tmpFile.WriteString(infoJSON); err != nil {
 			t.Fatalf("failed to write to temp file: %v", err)
 		}
-		tmpFile.Close()
+		_ = tmpFile.Close()
 
 		info, err := parseInfoJSON(tmpFile.Name())
 		if err != nil {
@@ -1229,12 +1229,12 @@ func TestParseInfoJSON(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to create temp file: %v", err)
 		}
-		defer os.Remove(tmpFile.Name())
+		defer func() { _ = os.Remove(tmpFile.Name()) }()
 
 		if _, err := tmpFile.WriteString("not valid json"); err != nil {
 			t.Fatalf("failed to write to temp file: %v", err)
 		}
-		tmpFile.Close()
+		_ = tmpFile.Close()
 
 		_, err = parseInfoJSON(tmpFile.Name())
 		if err == nil {
@@ -1290,7 +1290,7 @@ func TestGenerateCollectionIndex(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to create temp dir: %v", err)
 		}
-		defer os.RemoveAll(tmpDir)
+		defer func() { _ = os.RemoveAll(tmpDir) }()
 
 		// Create mock .info.json file
 		infoJSON := `{
@@ -1402,7 +1402,7 @@ func TestGenerateCollectionIndex(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to create temp dir: %v", err)
 		}
-		defer os.RemoveAll(tmpDir)
+		defer func() { _ = os.RemoveAll(tmpDir) }()
 
 		entries := []VideoEntry{}
 
@@ -1425,7 +1425,7 @@ func TestGenerateCollectionIndex(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to create temp dir: %v", err)
 		}
-		defer os.RemoveAll(tmpDir)
+		defer func() { _ = os.RemoveAll(tmpDir) }()
 
 		entries := []VideoEntry{
 			{
@@ -1465,7 +1465,7 @@ func TestWriteHTMLIndex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	index := &CollectionIndex{
 		Name:        "test_collection",

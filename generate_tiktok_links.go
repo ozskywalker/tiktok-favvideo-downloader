@@ -128,7 +128,7 @@ func getOrDownloadYtdlp(client *http.Client, exeName string) error {
 	if err != nil {
 		return fmt.Errorf("[!!!] failed to fetch the latest release info: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var release struct {
 		Assets []struct {
@@ -159,13 +159,13 @@ func getOrDownloadYtdlp(client *http.Client, exeName string) error {
 	if err != nil {
 		return fmt.Errorf("[!!!] error creating %s: %v", exeName, err)
 	}
-	defer out.Close()
+	defer func() { _ = out.Close() }()
 
 	downloadResp, err := client.Get(downloadURL)
 	if err != nil {
 		return fmt.Errorf("[!!!] failed to download %s: %v", exeName, err)
 	}
-	defer downloadResp.Body.Close()
+	defer func() { _ = downloadResp.Body.Close() }()
 
 	// 4. Copy the response body to the file
 	if _, err := io.Copy(out, downloadResp.Body); err != nil {
@@ -182,7 +182,7 @@ func parseFavoriteVideosFromFile(jsonFile string, includeLiked bool) ([]VideoEnt
 	if err != nil {
 		return nil, fmt.Errorf("error opening JSON file: %v", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	var data Data
 	if err := json.NewDecoder(file).Decode(&data); err != nil {
@@ -321,7 +321,7 @@ func writeVideoEntriesToFile(videoEntries []VideoEntry, outputName string) error
 	if err != nil {
 		return fmt.Errorf("[!!!] Error creating %s: %v", outputName, err)
 	}
-	defer outFile.Close()
+	defer func() { _ = outFile.Close() }()
 
 	for _, entry := range videoEntries {
 		_, writeErr := outFile.WriteString(entry.Link + "\n")
@@ -440,7 +440,7 @@ func writeHTMLIndex(dir string, index *CollectionIndex) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	return tmpl.Execute(f, index)
 }
