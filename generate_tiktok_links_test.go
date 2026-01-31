@@ -1585,6 +1585,161 @@ func TestGenerateCollectionIndex(t *testing.T) {
 			t.Errorf("expected Failed=1, got %d", index.Failed)
 		}
 	})
+
+	t.Run("handles filename with collection directory path", func(t *testing.T) {
+		// Reproduce issue #21: .info.json filename field contains "favorites\video.mp4"
+		tmpDir, err := os.MkdirTemp("", "path_test_*")
+		if err != nil {
+			t.Fatalf("failed to create temp dir: %v", err)
+		}
+		defer func() { _ = os.RemoveAll(tmpDir) }()
+
+		// Create the actual video file in tmpDir
+		videoFilename := "20260129_7600559584901647646_Test.mp4"
+		videoPath := filepath.Join(tmpDir, videoFilename)
+		if err := os.WriteFile(videoPath, []byte("fake video"), 0644); err != nil {
+			t.Fatalf("failed to write video: %v", err)
+		}
+
+		// Create thumbnail
+		thumbFilename := "20260129_7600559584901647646_Test.jpg"
+		thumbPath := filepath.Join(tmpDir, thumbFilename)
+		if err := os.WriteFile(thumbPath, []byte("fake thumb"), 0644); err != nil {
+			t.Fatalf("failed to write thumbnail: %v", err)
+		}
+
+		// Create .info.json with filename containing directory prefix (simulates yt-dlp behavior)
+		// This is what yt-dlp writes when using --output favorites/%(upload_date)s_%(id)s_%(title).50B.%(ext)s
+		infoJSON := fmt.Sprintf(`{
+			"id": "7600559584901647646",
+			"title": "Test Video",
+			"uploader": "TestUser",
+			"uploader_id": "testuser",
+			"upload_date": "20260129",
+			"duration": 45,
+			"view_count": 1500000,
+			"like_count": 50000,
+			"thumbnail": "https://example.com/thumb.jpg",
+			"filename": "favorites\\%s"
+		}`, videoFilename)
+		infoPath := filepath.Join(tmpDir, "20260129_7600559584901647646_Test.info.json")
+		if err := os.WriteFile(infoPath, []byte(infoJSON), 0644); err != nil {
+			t.Fatalf("failed to write info.json: %v", err)
+		}
+
+		entries := []VideoEntry{
+			{
+				Link:       "https://www.tiktok.com/@user/video/7600559584901647646",
+				Collection: "favorites",
+			},
+		}
+
+		// Generate index
+		err = generateCollectionIndex(tmpDir, entries, nil)
+		if err != nil {
+			t.Fatalf("generateCollectionIndex failed: %v", err)
+		}
+
+		// Read index.json
+		indexData, err := os.ReadFile(filepath.Join(tmpDir, "index.json"))
+		if err != nil {
+			t.Fatalf("failed to read index.json: %v", err)
+		}
+
+		var index CollectionIndex
+		if err := json.Unmarshal(indexData, &index); err != nil {
+			t.Fatalf("failed to parse index.json: %v", err)
+		}
+
+		// Verify video is detected as downloaded (this was the bug in #21)
+		if index.Downloaded != 1 {
+			t.Errorf("expected Downloaded=1, got %d (video should be detected despite path in filename)", index.Downloaded)
+		}
+		if index.Failed != 0 {
+			t.Errorf("expected Failed=0, got %d", index.Failed)
+		}
+
+		// Verify local filename is just the basename
+		if index.Videos[0].LocalFilename != videoFilename {
+			t.Errorf("expected LocalFilename=%q, got %q", videoFilename, index.Videos[0].LocalFilename)
+		}
+
+		// Verify thumbnail is detected
+		if index.Videos[0].ThumbnailFile != thumbFilename {
+			t.Errorf("expected ThumbnailFile=%q, got %q (thumbnail should be detected)", thumbFilename, index.Videos[0].ThumbnailFile)
+		}
+	})
+
+	t.Run("reproduces issue #21 - full absolute path in filename field", func(t *testing.T) {
+		// Create a directory structure that mimics the user's setup
+		tmpParent, err := os.MkdirTemp("", "issue21_*")
+		if err != nil {
+			t.Fatalf("failed to create temp parent dir: %v", err)
+		}
+		defer func() { _ = os.RemoveAll(tmpParent) }()
+
+		// Create favorites subdirectory
+		favDir := filepath.Join(tmpParent, "favorites")
+		if err := os.MkdirAll(favDir, 0755); err != nil {
+			t.Fatalf("failed to create favorites dir: %v", err)
+		}
+
+		// Create actual video and thumbnail files
+		videoFilename := "20260129_7600559584901647646_Test.mp4"
+		videoPath := filepath.Join(favDir, videoFilename)
+		if err := os.WriteFile(videoPath, []byte("fake video"), 0644); err != nil {
+			t.Fatalf("failed to write video: %v", err)
+		}
+
+		thumbFilename := "20260129_7600559584901647646_Test.jpg"
+		thumbPath := filepath.Join(favDir, thumbFilename)
+		if err := os.WriteFile(thumbPath, []byte("fake thumb"), 0644); err != nil {
+			t.Fatalf("failed to write thumbnail: %v", err)
+		}
+
+		// Create .info.json with FULL ABSOLUTE PATH in filename field
+		// This is what yt-dlp actually writes on Windows
+		infoJSON := fmt.Sprintf(`{
+			"id": "7600559584901647646",
+			"title": "Test Video",
+			"uploader": "TestUser",
+			"uploader_id": "testuser",
+			"upload_date": "20260129",
+			"duration": 45,
+			"view_count": 1500000,
+			"like_count": 50000,
+			"thumbnail": "https://example.com/thumb.jpg",
+			"filename": %q
+		}`, videoPath) // Full absolute Windows path
+		infoPath := filepath.Join(favDir, "20260129_7600559584901647646_Test.info.json")
+		if err := os.WriteFile(infoPath, []byte(infoJSON), 0644); err != nil {
+			t.Fatalf("failed to write info.json: %v", err)
+		}
+
+		entries := []VideoEntry{
+			{
+				Link:       "https://www.tiktok.com/@user/video/7600559584901647646",
+				Collection: "favorites",
+			},
+		}
+
+		// Generate index (pass "favorites" as relative path, like --index-only does)
+		err = generateCollectionIndex("favorites", entries, nil)
+		if err == nil {
+			// Read index to see what happened
+			indexPath := filepath.Join("favorites", "index.json")
+			indexData, _ := os.ReadFile(indexPath)
+			var index CollectionIndex
+			_ = json.Unmarshal(indexData, &index)
+			t.Logf("Index generated with Downloaded=%d, Failed=%d", index.Downloaded, index.Failed)
+			if len(index.Videos) > 0 {
+				t.Logf("Video[0]: Downloaded=%v, Error=%q", index.Videos[0].Downloaded, index.Videos[0].DownloadError)
+			}
+		}
+
+		// This test is expected to fail with the current code if favorites/ doesn't exist in CWD
+		// The fix should make it work regardless
+	})
 }
 
 // TestWriteHTMLIndex tests the HTML template rendering

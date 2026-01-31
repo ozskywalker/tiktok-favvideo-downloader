@@ -1408,6 +1408,23 @@ func generateCollectionIndex(collectionDir string, entries []VideoEntry, failure
 			if info.Filename != "" {
 				baseFilename = filepath.Base(info.Filename)
 				enrichedEntries[i].LocalFilename = baseFilename
+			} else {
+				// Fallback: If filename is not in .info.json, try to find the video file by video ID
+				// This handles cases where yt-dlp doesn't populate the filename field
+				// Look for files matching the pattern: *_<videoID>_*.mp4 (or other video extensions)
+				pattern := filepath.Join(collectionDir, fmt.Sprintf("*_%s_*", videoID))
+				matches, err := filepath.Glob(pattern + ".*")
+				if err == nil && len(matches) > 0 {
+					// Found potential matches - filter for video files (exclude .info.json, .part, .ytdl, etc.)
+					for _, match := range matches {
+						ext := strings.ToLower(filepath.Ext(match))
+						if ext == ".mp4" || ext == ".mkv" || ext == ".webm" || ext == ".mov" {
+							baseFilename = filepath.Base(match)
+							enrichedEntries[i].LocalFilename = baseFilename
+							break
+						}
+					}
+				}
 			}
 
 			// Check if video file actually exists (not just .info.json)
