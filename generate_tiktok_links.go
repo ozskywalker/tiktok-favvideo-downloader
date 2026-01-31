@@ -1349,6 +1349,7 @@ func runYtdlpWithRunner(runner CommandRunner, psPrefix, outputName string, organ
 	// Add thumbnail download unless skipped
 	if !skipThumbnails {
 		args = append(args, "--write-thumbnail")
+		args = append(args, "--convert-thumbnails", "jpg") // Ensure consistent .jpg extension
 	}
 
 	// Add cookie arguments if configured
