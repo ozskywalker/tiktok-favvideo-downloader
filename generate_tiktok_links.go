@@ -173,8 +173,9 @@ type ProgressState struct {
 
 // ProgressRenderer handles ANSI-based progress display
 type ProgressRenderer struct {
-	enabled     bool // false if terminal doesn't support ANSI or user disabled it
-	lastLineLen int  // track last line length for proper clearing
+	enabled     bool      // false if terminal doesn't support ANSI or user disabled it
+	lastLineLen int       // track last line length for proper clearing
+	writer      io.Writer // where to write output (defaults to os.Stdout)
 }
 
 // Config holds the application configuration
@@ -667,61 +668,91 @@ func (r *RealCommandRunner) Run(name string, args ...string) (CapturedOutput, er
 		return CapturedOutput{}, err
 	}
 
+	// Process output using the extracted function
+	// We pass tee readers so we can capture the raw output while processing it
+	stdoutTee := io.TeeReader(stdoutPipe, &stdoutBuf)
+	stderrTee := io.TeeReader(stderrPipe, &stderrBuf)
+
+	// Note: processOutput now returns just error, as it doesn't build the CapturedOutput
+	// We build CapturedOutput here from the buffers
+	processErr := processOutput(stdoutTee, stderrTee, os.Stdout, os.Stderr, r.ProgressRenderer, r.ProgressState)
+
+	// Wait for command to complete
+	cmdErr := cmd.Wait()
+
+	// Combine output line-by-line
+	combined := combineOutputLines(stdoutBuf.String(), stderrBuf.String())
+
+	// Return command error if it failed, otherwise process error
+	finalErr := cmdErr
+	if finalErr == nil {
+		finalErr = processErr
+	}
+
+	return CapturedOutput{
+		Stdout:   stdoutBuf,
+		Stderr:   stderrBuf,
+		Combined: combined,
+	}, finalErr
+}
+
+// processOutput handles reading from stdout/stderr and updating progress
+// Separated from Run for testing purposes
+func processOutput(stdout, stderr io.Reader, stdoutWriter, stderrWriter io.Writer, renderer *ProgressRenderer, state *ProgressState) error {
 	// Process stdout and stderr line-by-line in goroutines
 	done := make(chan bool, 2)
 
 	// Process stdout
 	go func() {
-		scanner := bufio.NewScanner(stdoutPipe)
+		scanner := bufio.NewScanner(stdout)
 		for scanner.Scan() {
 			line := scanner.Text()
-			stdoutBuf.WriteString(line + "\n") // Capture line
-
+			
 			// Check for progress line if progress rendering is enabled
-			if r.ProgressRenderer != nil && r.ProgressState != nil {
+			if renderer != nil && state != nil {
 				current, total, isProgress, err := parseProgressLine(line)
 				if err == nil && isProgress {
 					// Update progress state
-					r.ProgressState.CurrentIndex = current
-					r.ProgressState.TotalVideos = total
+					state.CurrentIndex = current
+					state.TotalVideos = total
 					// Render progress bar
-					r.ProgressRenderer.renderProgress(r.ProgressState)
+					renderer.renderProgress(state)
 					continue // Don't print progress lines when using progress bar
 				}
 
 				// Check for skip line (already downloaded videos)
 				if isSkipLine(line) {
 					// Increment progress for skipped videos
-					r.ProgressState.CurrentIndex++
-					r.ProgressState.SuccessCount++
+					state.CurrentIndex++
+					state.SuccessCount++
 					// Render progress bar
-					r.ProgressRenderer.renderProgress(r.ProgressState)
+					renderer.renderProgress(state)
 					continue // Don't print skip lines when using progress bar
 				}
 
 				// Check for error line (failed downloads)
 				if isErrorLine(line) {
 					// Increment failure count for errors
-					r.ProgressState.FailureCount++
+					state.FailureCount++
 					// Don't render here - let it fall through to normal print logic
 					// which will clear, print, and re-render properly
 				}
 
 				// Check for verbose line when progress bar is enabled
-				if r.ProgressRenderer.enabled && isVerboseLine(line) {
+				if renderer.enabled && isVerboseLine(line) {
 					continue // Don't print verbose lines when using progress bar
 				}
 			}
 
 			// For non-progress lines or when progress bar is disabled
-			if r.ProgressRenderer != nil && r.ProgressRenderer.enabled {
+			if renderer != nil && renderer.enabled {
 				// Clear progress bar before printing regular line
-				r.ProgressRenderer.clearProgress()
+				renderer.clearProgress()
 			}
-			_, _ = fmt.Fprintln(os.Stdout, line) // Ignore errors writing to stdout
-			if r.ProgressRenderer != nil && r.ProgressRenderer.enabled {
+			_, _ = fmt.Fprintln(stdoutWriter, line) // Ignore errors writing to stdout
+			if renderer != nil && renderer.enabled {
 				// Re-render progress after printing line
-				r.ProgressRenderer.renderProgress(r.ProgressState)
+				renderer.renderProgress(state)
 			}
 		}
 		done <- true
@@ -729,27 +760,26 @@ func (r *RealCommandRunner) Run(name string, args ...string) (CapturedOutput, er
 
 	// Process stderr
 	go func() {
-		scanner := bufio.NewScanner(stderrPipe)
+		scanner := bufio.NewScanner(stderr)
 		for scanner.Scan() {
 			line := scanner.Text()
-			stderrBuf.WriteString(line + "\n") // Capture line
-
+			
 			// Check for error line (failed downloads) when progress bar is enabled
-			if r.ProgressRenderer != nil && r.ProgressState != nil {
+			if renderer != nil && state != nil {
 				if isErrorLine(line) {
 					// Increment failure count for errors
-					r.ProgressState.FailureCount++
+					state.FailureCount++
 				}
 			}
 
 			// Clear progress bar before printing error line
-			if r.ProgressRenderer != nil && r.ProgressRenderer.enabled {
-				r.ProgressRenderer.clearProgress()
+			if renderer != nil && renderer.enabled {
+				renderer.clearProgress()
 			}
-			fmt.Fprintln(os.Stderr, line) // Display line
+			fmt.Fprintln(stderrWriter, line) // Display line
 			// Re-render progress bar after printing error line
-			if r.ProgressRenderer != nil && r.ProgressRenderer.enabled {
-				r.ProgressRenderer.renderProgress(r.ProgressState)
+			if renderer != nil && renderer.enabled {
+				renderer.renderProgress(state)
 			}
 		}
 		done <- true
@@ -759,23 +789,13 @@ func (r *RealCommandRunner) Run(name string, args ...string) (CapturedOutput, er
 	<-done
 	<-done
 
-	// Wait for command to complete
-	err = cmd.Wait()
-
-	// Clear progress bar when command finishes
-	if r.ProgressRenderer != nil {
-		r.ProgressRenderer.clearProgress()
-		fmt.Println() // Add newline after clearing
+	// Clear progress bar when processing finishes
+	if renderer != nil {
+		renderer.clearProgress()
+		fmt.Fprintln(stdoutWriter) // Add newline after clearing
 	}
 
-	// Combine output line-by-line
-	combined := combineOutputLines(stdoutBuf.String(), stderrBuf.String())
-
-	return CapturedOutput{
-		Stdout:   stdoutBuf,
-		Stderr:   stderrBuf,
-		Combined: combined,
-	}, err
+	return nil
 }
 
 // combineOutputLines merges stdout and stderr into a single line-by-line array
@@ -951,6 +971,12 @@ func (pr *ProgressRenderer) renderProgress(state *ProgressState) {
 		return
 	}
 
+	// Default to stdout if no writer specified
+	out := pr.writer
+	if out == nil {
+		out = os.Stdout
+	}
+
 	// Calculate percentage
 	percentage := 0.0
 	if state.TotalVideos > 0 {
@@ -993,7 +1019,7 @@ func (pr *ProgressRenderer) renderProgress(state *ProgressState) {
 	pr.lastLineLen = len(line)
 
 	// Print progress (using \r to overwrite current line)
-	fmt.Print(line)
+	fmt.Fprint(out, line)
 }
 
 // clearProgress clears the progress bar line
@@ -1002,8 +1028,14 @@ func (pr *ProgressRenderer) clearProgress() {
 		return
 	}
 
+	// Default to stdout if no writer specified
+	out := pr.writer
+	if out == nil {
+		out = os.Stdout
+	}
+
 	// Clear line and move to start
-	fmt.Print("\r" + strings.Repeat(" ", pr.lastLineLen) + "\r")
+	fmt.Fprint(out, "\r"+strings.Repeat(" ", pr.lastLineLen)+"\r")
 	pr.lastLineLen = 0
 }
 
@@ -1172,7 +1204,10 @@ func runYtdlp(psPrefix, outputName string, organizeByCollection, skipThumbnails,
 		if collectionName == "." {
 			collectionName = "videos"
 		}
-		renderer = &ProgressRenderer{enabled: true}
+		renderer = &ProgressRenderer{
+			enabled: true,
+			writer:  os.Stdout,
+		}
 		state = &ProgressState{
 			CollectionName: collectionName,
 			TotalVideos:    len(entries),
