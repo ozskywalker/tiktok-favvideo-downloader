@@ -1934,7 +1934,14 @@ func main() {
 		return
 	}
 
-	// Attempt to get or download yt-dlp.exe
+	// Check if yt-dlp already exists before attempting to get/download
+	// If it exists, we'll run it automatically later; if not, we'll ask the user
+	ytdlpExistedBefore := false
+	if _, err := os.Stat("yt-dlp.exe"); err == nil {
+		ytdlpExistedBefore = true
+	}
+
+	// Attempt to get or download yt-dlp.exe (handles updates for existing files)
 	if err := getOrDownloadYtdlp(http.DefaultClient, "yt-dlp.exe"); err != nil {
 		fmt.Printf("[!] Warning: %v\n", err)
 		// Not exiting here so you can still generate fav_videos.txt if needed
@@ -1993,12 +2000,24 @@ func main() {
 		fmt.Printf("  %s\n", ytDlpCmd)
 	}
 
-	// Offer to run the command automatically
-	fmt.Print("\n*** Would you like me to run yt-dlp for you instead? (y/n): ")
-	answer := bufio.NewReader(os.Stdin)
-	response, _ := answer.ReadString('\n')
-	response = strings.TrimSpace(strings.ToLower(response))
-	if response == "y" || response == "yes" {
+	// If yt-dlp already existed, run automatically; otherwise ask user
+	shouldRunYtdlp := false
+	if ytdlpExistedBefore {
+		// yt-dlp already existed before we started - run automatically
+		fmt.Println("\n[*] Starting download with yt-dlp...")
+		shouldRunYtdlp = true
+	} else if _, err := os.Stat("yt-dlp.exe"); err == nil {
+		// yt-dlp was just downloaded by getOrDownloadYtdlp - ask user if they want to run it
+		fmt.Print("\n*** yt-dlp.exe was downloaded. Would you like me to run it for you? (y/n): ")
+		answer := bufio.NewReader(os.Stdin)
+		response, _ := answer.ReadString('\n')
+		response = strings.TrimSpace(strings.ToLower(response))
+		if response == "y" || response == "yes" {
+			shouldRunYtdlp = true
+		}
+	}
+
+	if shouldRunYtdlp {
 		// Initialize download session tracking
 		session := &DownloadSession{
 			StartTime:   time.Now(),
