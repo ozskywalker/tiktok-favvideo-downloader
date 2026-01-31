@@ -97,6 +97,7 @@ type DownloadSession struct {
 	TotalAttempted int
 	TotalSuccess   int
 	TotalFailed    int
+	TotalSkipped   int
 }
 
 // CollectionResult tracks results for a single collection
@@ -105,6 +106,7 @@ type CollectionResult struct {
 	Attempted      int
 	Success        int
 	Failed         int
+	Skipped        int
 	FailureDetails []FailureDetail
 }
 
@@ -169,6 +171,8 @@ type ProgressState struct {
 	TotalVideos    int
 	SuccessCount   int
 	FailureCount   int
+	SkippedCount   int
+	InitialSkipped int
 }
 
 // ProgressRenderer handles ANSI-based progress display
@@ -710,11 +714,11 @@ func processOutput(stdout, stderr io.Reader, stdoutWriter, stderrWriter io.Write
 			
 			// Check for progress line if progress rendering is enabled
 			if renderer != nil && state != nil {
-				current, total, isProgress, err := parseProgressLine(line)
+				current, _, isProgress, err := parseProgressLine(line)
 				if err == nil && isProgress {
 					// Update progress state
-					state.CurrentIndex = current
-					state.TotalVideos = total
+					state.CurrentIndex = state.InitialSkipped + current
+					// state.TotalVideos is already set correctly
 					// Render progress bar
 					renderer.renderProgress(state)
 					continue // Don't print progress lines when using progress bar
@@ -724,7 +728,7 @@ func processOutput(stdout, stderr io.Reader, stdoutWriter, stderrWriter io.Write
 				if isSkipLine(line) {
 					// Increment progress for skipped videos
 					state.CurrentIndex++
-					state.SuccessCount++
+					state.SkippedCount++
 					// Render progress bar
 					renderer.renderProgress(state)
 					continue // Don't print skip lines when using progress bar
@@ -994,11 +998,12 @@ func (pr *ProgressRenderer) renderProgress(state *ProgressState) {
 
 	// Color codes
 	green := "\033[32m"
+	yellow := "\033[33m"
 	red := "\033[31m"
 	reset := "\033[0m"
 
 	// Build progress line
-	line := fmt.Sprintf("\rDownloading %s (%d/%d) | %s %.1f%% | %sSuccess: %d%s | %sFailed: %d%s",
+	line := fmt.Sprintf("\rDownloading %s (%d/%d) | %s %.1f%% | %sSuccess: %d%s | %sSkipped: %d%s | %sFailed: %d%s",
 		state.CollectionName,
 		state.CurrentIndex,
 		state.TotalVideos,
@@ -1006,6 +1011,9 @@ func (pr *ProgressRenderer) renderProgress(state *ProgressState) {
 		percentage,
 		green,
 		state.SuccessCount,
+		reset,
+		yellow,
+		state.SkippedCount,
 		reset,
 		red,
 		state.FailureCount,
@@ -1040,11 +1048,12 @@ func (pr *ProgressRenderer) clearProgress() {
 }
 
 // calculateSessionTotals aggregates totals across all collections
-func calculateSessionTotals(collections []CollectionResult) (attempted, success, failed int) {
+func calculateSessionTotals(collections []CollectionResult) (attempted, success, failed, skipped int) {
 	for _, col := range collections {
 		attempted += col.Attempted
 		success += col.Success
 		failed += col.Failed
+		skipped += col.Skipped
 	}
 	return
 }
@@ -1059,14 +1068,15 @@ func printSessionSummary(session *DownloadSession) {
 	fmt.Printf("Duration: %s\n", formatDuration(int(duration.Seconds())))
 	fmt.Printf("Total Videos Attempted: %d\n", session.TotalAttempted)
 	fmt.Printf("  ✓ Successfully Downloaded: %d\n", session.TotalSuccess)
+	fmt.Printf("  - Skipped (Already Downloaded): %d\n", session.TotalSkipped)
 	fmt.Printf("  ✗ Failed: %d\n\n", session.TotalFailed)
 
 	if len(session.Collections) > 1 {
 		fmt.Println("Collection Breakdown:")
 		for _, col := range session.Collections {
 			fmt.Printf("  %s:\n", col.Name)
-			fmt.Printf("    Attempted: %-4d | Success: %-4d | Failed: %d\n",
-				col.Attempted, col.Success, col.Failed)
+			fmt.Printf("    Attempted: %-4d | Success: %-4d | Skipped: %-4d | Failed: %d\n",
+				col.Attempted, col.Success, col.Skipped, col.Failed)
 		}
 		fmt.Println()
 	}
@@ -1118,6 +1128,7 @@ func writeResultsFile(session *DownloadSession) error {
 	_, _ = fmt.Fprintf(w, "=======\n")
 	_, _ = fmt.Fprintf(w, "Total Videos Attempted: %d\n", session.TotalAttempted)
 	_, _ = fmt.Fprintf(w, "Successfully Downloaded: %d\n", session.TotalSuccess)
+	_, _ = fmt.Fprintf(w, "Skipped: %d\n", session.TotalSkipped)
 	_, _ = fmt.Fprintf(w, "Failed: %d\n\n", session.TotalFailed)
 
 	if session.TotalFailed == 0 {
@@ -1229,40 +1240,63 @@ func runYtdlpWithRunner(runner CommandRunner, psPrefix, outputName string, organ
 		collectionName = "videos"
 	}
 
-	// Pre-check optimization if resume is enabled
+	// Calculate archive file path (matches logic below at lines 1159-1165)
+	var archivePath string
+	if organizeByCollection {
+		dir := filepath.Dir(outputName)
+		archivePath = filepath.Join(dir, "download_archive.txt")
+	} else {
+		archivePath = "download_archive.txt"
+	}
+
+	// Optimization: Filter out already downloaded videos if resume is enabled
+	videosToDownload := entries
+	skippedCount := 0
+
 	if !disableResume {
-		// Calculate archive file path (matches logic below at lines 1159-1165)
-		var archivePath string
-		if organizeByCollection {
-			dir := filepath.Dir(outputName)
-			archivePath = filepath.Join(dir, "download_archive.txt")
-		} else {
-			archivePath = "download_archive.txt"
+		archive, err := parseArchiveFile(archivePath)
+		if err == nil && len(archive) > 0 {
+			var filtered []VideoEntry
+			for _, entry := range entries {
+				videoID := extractVideoID(entry.Link)
+				// If ID found and in archive, skip
+				if videoID != "" && archive[videoID] {
+					skippedCount++
+				} else {
+					filtered = append(filtered, entry)
+				}
+			}
+			videosToDownload = filtered
 		}
+	}
 
-		// Check if all videos already downloaded
-		shouldSkip, msg, err := shouldSkipCollection(entries, archivePath)
+	// Update ProgressState if available
+	if realRunner, ok := runner.(*RealCommandRunner); ok && realRunner.ProgressState != nil {
+		realRunner.ProgressState.InitialSkipped = skippedCount
+		realRunner.ProgressState.SkippedCount = skippedCount
+		realRunner.ProgressState.CurrentIndex = skippedCount
+		// TotalVideos remains len(entries)
+	}
 
-		if err != nil {
-			// Error parsing archive - log warning but continue with yt-dlp
-			fmt.Printf("[!] Warning: Could not parse archive file, proceeding with yt-dlp: %v\n", err)
-		} else if shouldSkip {
-			// All videos already downloaded - skip yt-dlp entirely
-			fmt.Printf("[*] %s collection: %s (skipping yt-dlp)\n",
-				collectionName, msg)
+	// If all videos are skipped, we can return early
+	if len(videosToDownload) == 0 {
+		fmt.Printf("[*] %s collection: All %d videos already downloaded (skipping yt-dlp)\n",
+			collectionName, len(entries))
 
-			// Return successful result without calling yt-dlp
-			return &CollectionResult{
-				Name:           collectionName,
-				Attempted:      len(entries),
-				Failed:         0,
-				Success:        len(entries),
-				FailureDetails: []FailureDetail{},
-			}, nil
-		} else {
-			// Partial download needed - inform user
-			fmt.Printf("[*] %s collection: %s\n", collectionName, msg)
-		}
+		return &CollectionResult{
+			Name:           collectionName,
+			Attempted:      len(entries),
+			Failed:         0,
+			Success:        len(entries), // All considered success (skipped)
+			Skipped:        len(entries),
+			FailureDetails: []FailureDetail{},
+		}, nil
+	}
+
+	// If we have skipped some but not all, notify user
+	if skippedCount > 0 {
+		fmt.Printf("[*] %s collection: %d videos to download (%d skipped)\n",
+			collectionName, len(videosToDownload), skippedCount)
 	}
 
 	fmt.Println("[*] Running yt-dlp now...")
@@ -1280,9 +1314,34 @@ func runYtdlpWithRunner(runner CommandRunner, psPrefix, outputName string, organ
 		outputFormat = "%(upload_date)s_%(id)s_%(title).50B.%(ext)s"
 	}
 
+	// Determine which file to pass to yt-dlp
+	targetFile := outputName
+
+	// If we filtered the list, write a temporary file
+	if skippedCount > 0 {
+		tempFile := outputName + ".partial.txt"
+		// Ensure directory exists (should already exist from main, but just in case)
+		if organizeByCollection {
+			_ = os.MkdirAll(filepath.Dir(tempFile), 0755)
+		}
+
+		if err := writeVideoEntriesToFile(videosToDownload, tempFile); err != nil {
+			fmt.Printf("[!] Warning: Failed to create partial list: %v. Using full list.\n", err)
+			// Fallback to full list, reset offsets
+			if realRunner, ok := runner.(*RealCommandRunner); ok && realRunner.ProgressState != nil {
+				realRunner.ProgressState.InitialSkipped = 0
+				realRunner.ProgressState.SkippedCount = 0
+				realRunner.ProgressState.CurrentIndex = 0
+			}
+		} else {
+			targetFile = tempFile
+			defer os.Remove(tempFile) // Clean up temp file
+		}
+	}
+
 	// Build yt-dlp arguments with metadata options
 	args := []string{
-		"-a", outputName,
+		"-a", targetFile,
 		"--output", outputFormat,
 		"--write-info-json", // Save metadata JSON for each video
 	}
@@ -1302,15 +1361,6 @@ func runYtdlpWithRunner(runner CommandRunner, psPrefix, outputName string, organ
 
 	// Add resume functionality flags unless disabled
 	if !disableResume {
-		// Calculate archive file path based on organization mode
-		var archivePath string
-		if organizeByCollection {
-			dir := filepath.Dir(outputName)
-			archivePath = filepath.Join(dir, "download_archive.txt")
-		} else {
-			archivePath = "download_archive.txt"
-		}
-
 		// Add flags for resume functionality
 		args = append(args, "--download-archive", archivePath)
 		args = append(args, "--no-overwrites")
@@ -1321,22 +1371,38 @@ func runYtdlpWithRunner(runner CommandRunner, psPrefix, outputName string, organ
 	output, err := runner.Run(cmdStr, args...)
 
 	// Parse output to extract failures
-	failures := parseYtdlpOutput(output.Combined, entries)
+	failures := parseYtdlpOutput(output.Combined, videosToDownload)
 
 	// Build result summary
+	// Get final skipped count from state (includes those skipped by yt-dlp during run)
+	finalSkipped := skippedCount
+	if realRunner, ok := runner.(*RealCommandRunner); ok && realRunner.ProgressState != nil {
+		finalSkipped = realRunner.ProgressState.SkippedCount
+	}
+
 	result := &CollectionResult{
 		Name:           filepath.Base(filepath.Dir(outputName)),
 		Attempted:      len(entries),
 		Failed:         len(failures),
-		Success:        len(entries) - len(failures),
+		Success:        len(entries) - len(failures) - finalSkipped,
+		Skipped:        finalSkipped,
 		FailureDetails: failures,
+	}
+
+	// Safety check for negative success count
+	if result.Success < 0 {
+		result.Success = 0
 	}
 
 	if err != nil || len(failures) > 0 {
 		fmt.Printf("[!] Download completed with %d failures out of %d videos.\n",
-			result.Failed, result.Attempted)
+			result.Failed, len(videosToDownload))
 	} else {
-		fmt.Printf("[*] Successfully downloaded all %d videos.\n", result.Success)
+		if skippedCount > 0 {
+			fmt.Printf("[*] Successfully downloaded %d new videos.\n", result.Success)
+		} else {
+			fmt.Printf("[*] Successfully downloaded all %d videos.\n", result.Success)
+		}
 	}
 
 	return result, err
@@ -1994,14 +2060,13 @@ func main() {
 			}
 		}
 
-		// Finalize session
-		session.EndTime = time.Now()
-		session.TotalAttempted, session.TotalSuccess, session.TotalFailed =
-			calculateSessionTotals(session.Collections)
-
-		// Display summary
-		printSessionSummary(session)
-
+		        // Finalize session
+				session.EndTime = time.Now()
+				session.TotalAttempted, session.TotalSuccess, session.TotalFailed, session.TotalSkipped =
+					calculateSessionTotals(session.Collections)
+		
+				// Print summary
+				printSessionSummary(session)
 		// Write results.txt
 		if err := writeResultsFile(session); err != nil {
 			fmt.Printf("[!] Warning: Failed to write results.txt: %v\n", err)

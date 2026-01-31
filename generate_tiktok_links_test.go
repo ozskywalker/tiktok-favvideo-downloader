@@ -4034,14 +4034,14 @@ func TestOutputProcessing(t *testing.T) {
 	// Wait, let's check logic:
 	// - "Downloading item 1 of 10" -> CurrentIndex = 1
 	// - "Downloading item 2 of 10" -> CurrentIndex = 2
-	// - "already downloaded" -> CurrentIndex++ (becomes 3), SuccessCount++ (becomes 1)
+	// - "already downloaded" -> CurrentIndex++ (becomes 3), SkippedCount++ (becomes 1)
 	// - "ERROR" -> FailureCount++ (becomes 1)
 	
 	if state.CurrentIndex != 3 {
 		t.Errorf("Expected CurrentIndex 3, got %d", state.CurrentIndex)
 	}
-	if state.SuccessCount != 1 {
-		t.Errorf("Expected SuccessCount 1, got %d", state.SuccessCount)
+	if state.SkippedCount != 1 {
+		t.Errorf("Expected SkippedCount 1, got %d", state.SkippedCount)
 	}
 	if state.FailureCount != 1 {
 		t.Errorf("Expected FailureCount 1, got %d", state.FailureCount)
