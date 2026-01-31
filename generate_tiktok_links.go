@@ -583,7 +583,7 @@ func (r *RealCommandRunner) Run(name string, args ...string) (CapturedOutput, er
 				// Clear progress bar before printing regular line
 				r.ProgressRenderer.clearProgress()
 			}
-			fmt.Fprintln(os.Stdout, line) // Display line
+			_, _ = fmt.Fprintln(os.Stdout, line) // Ignore errors writing to stdout
 			if r.ProgressRenderer != nil && r.ProgressRenderer.enabled {
 				// Re-render progress after printing line
 				r.ProgressRenderer.renderProgress(r.ProgressState)
