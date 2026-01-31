@@ -1528,7 +1528,11 @@ func generateCollectionIndex(collectionDir string, entries []VideoEntry, failure
 			// Determine the local filename from the info (use basename only)
 			baseFilename := ""
 			if info.Filename != "" {
-				baseFilename = filepath.Base(info.Filename)
+				// Normalize path separators before extracting basename
+				// yt-dlp may write Windows-style paths (\) in .info.json even on Unix systems
+				// (e.g., if the file was created on Windows and read on Linux, or vice versa)
+				normalizedFilename := strings.ReplaceAll(info.Filename, "\\", "/")
+				baseFilename = filepath.Base(normalizedFilename)
 				enrichedEntries[i].LocalFilename = baseFilename
 			} else {
 				// Fallback: If filename is not in .info.json, try to find the video file by video ID
