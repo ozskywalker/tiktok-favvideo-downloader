@@ -209,10 +209,90 @@ func isFileOlderThan30Days(path string) (bool, error) {
 	return modTime.Before(thirtyDaysAgo), nil
 }
 
+// getYtdlpVersion runs yt-dlp --version and returns the version string (e.g., "2026.01.29")
+func getYtdlpVersion(exePath string) (string, error) {
+	cmd := exec.Command(exePath, "--version")
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("failed to run %s --version: %v", exePath, err)
+	}
+	version := strings.TrimSpace(string(output))
+	if version == "" {
+		return "", fmt.Errorf("yt-dlp --version returned empty output")
+	}
+	return version, nil
+}
+
+// getLatestYtdlpVersion fetches the latest yt-dlp version from GitHub releases
+// It uses the redirect from /releases/latest to determine the version tag
+func getLatestYtdlpVersion(client *http.Client) (string, error) {
+	// Create a client that doesn't follow redirects so we can capture the Location header
+	checkRedirect := client.CheckRedirect
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse // Don't follow redirects
+	}
+	defer func() { client.CheckRedirect = checkRedirect }()
+
+	resp, err := client.Get("https://github.com/yt-dlp/yt-dlp/releases/latest")
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch GitHub releases: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	// GitHub returns 302 redirect to /releases/tag/YYYY.MM.DD
+	if resp.StatusCode != http.StatusFound && resp.StatusCode != http.StatusMovedPermanently {
+		return "", fmt.Errorf("unexpected response status: %d", resp.StatusCode)
+	}
+
+	location := resp.Header.Get("Location")
+	if location == "" {
+		return "", fmt.Errorf("no redirect location in response")
+	}
+
+	// Extract version from URL like https://github.com/yt-dlp/yt-dlp/releases/tag/2026.01.29
+	parts := strings.Split(location, "/tag/")
+	if len(parts) != 2 {
+		return "", fmt.Errorf("unexpected redirect URL format: %s", location)
+	}
+
+	version := strings.TrimSpace(parts[1])
+	if version == "" {
+		return "", fmt.Errorf("empty version in redirect URL")
+	}
+
+	return version, nil
+}
+
+// compareVersions compares two yt-dlp version strings in YYYY.MM.DD format
+// Returns: -1 if local < remote (needs update), 0 if equal, 1 if local > remote
+func compareVersions(local, remote string) int {
+	// Parse versions - yt-dlp uses YYYY.MM.DD format
+	// Simple string comparison works since format is consistent and zero-padded
+	if local == remote {
+		return 0
+	}
+	if local < remote {
+		return -1
+	}
+	return 1
+}
+
+// updateYtdlp runs yt-dlp --update to self-update the binary
+func updateYtdlp(exePath string) error {
+	fmt.Println("[*] Running yt-dlp --update...")
+	cmd := exec.Command(exePath, "--update")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("yt-dlp --update failed: %v", err)
+	}
+	return nil
+}
+
 // promptForUpdate asks the user if they want to update yt-dlp.exe
 // Returns true if user wants to update (default is yes)
 func promptForUpdate() bool {
-	fmt.Print("[*] A newer version of yt-dlp may be available. Would you like to download it? (Y/n, default is 'Y'): ")
+	fmt.Print("[*] A newer version of yt-dlp is available. Would you like to update? (Y/n, default is 'Y'): ")
 
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Scan()
@@ -308,43 +388,56 @@ func downloadLatestYtdlp(client *http.Client, exeName string) error {
 
 // getOrDownloadYtdlp checks if yt-dlp.exe is present in the current directory.
 // If not, it downloads the latest version from GitHub.
-// If it exists but is older than 30 days, prompts user to update.
+// If it exists, compares local version against GitHub latest and offers to update.
 // Accepts an *http.Client so we can mock the download in tests.
 func getOrDownloadYtdlp(client *http.Client, exeName string) error {
 	// Check if the file already exists
 	if _, err := os.Stat(exeName); err == nil {
-		// File exists - check if it's older than 30 days
-		isOld, err := isFileOlderThan30Days(exeName)
+		// File exists - check version against GitHub latest
+		localVersion, err := getYtdlpVersion(exeName)
 		if err != nil {
-			fmt.Printf("[!] Warning: Could not check file age: %v\n", err)
+			fmt.Printf("[!] Warning: Could not get local yt-dlp version: %v\n", err)
 			fmt.Printf("[*] Found %s in the current directory. Continuing with existing version.\n", exeName)
 			return nil
 		}
 
-		if isOld {
-			// Prompt user for update
-			if promptForUpdate() {
-				// User wants to update - backup current version
-				if err := backupYtdlp(exeName); err != nil {
-					return fmt.Errorf("backup failed: %v", err)
-				}
+		latestVersion, err := getLatestYtdlpVersion(client)
+		if err != nil {
+			fmt.Printf("[!] Warning: Could not check for updates: %v\n", err)
+			fmt.Printf("[*] Found %s (version %s). Continuing with existing version.\n", exeName, localVersion)
+			return nil
+		}
 
-				// Download new version
-				if err := downloadLatestYtdlp(client, exeName); err != nil {
-					// Download failed - try to restore backup
-					fmt.Printf("[!] Download failed: %v\n", err)
-					fmt.Printf("[*] Attempting to restore backup...\n")
-					if restoreErr := os.Rename(exeName+".old", exeName); restoreErr != nil {
-						return fmt.Errorf("download failed and could not restore backup: %v (restore error: %v)", err, restoreErr)
+		if compareVersions(localVersion, latestVersion) < 0 {
+			// Local version is older than latest
+			fmt.Printf("[*] Current version: %s, Latest version: %s\n", localVersion, latestVersion)
+			if promptForUpdate() {
+				// Try yt-dlp --update first (preferred method)
+				if err := updateYtdlp(exeName); err != nil {
+					fmt.Printf("[!] Self-update failed: %v\n", err)
+					fmt.Printf("[*] Trying manual download as fallback...\n")
+
+					// Fallback to manual download
+					if err := backupYtdlp(exeName); err != nil {
+						return fmt.Errorf("backup failed: %v", err)
 					}
-					fmt.Printf("[*] Backup restored. Continuing with existing version.\n")
-					return nil
+
+					if err := downloadLatestYtdlp(client, exeName); err != nil {
+						// Download failed - try to restore backup
+						fmt.Printf("[!] Download failed: %v\n", err)
+						fmt.Printf("[*] Attempting to restore backup...\n")
+						if restoreErr := os.Rename(exeName+".old", exeName); restoreErr != nil {
+							return fmt.Errorf("download failed and could not restore backup: %v (restore error: %v)", err, restoreErr)
+						}
+						fmt.Printf("[*] Backup restored. Continuing with existing version.\n")
+						return nil
+					}
 				}
 			} else {
-				fmt.Printf("[*] Continuing with existing %s.\n", exeName)
+				fmt.Printf("[*] Continuing with existing %s (version %s).\n", exeName, localVersion)
 			}
 		} else {
-			fmt.Printf("[*] Found %s in the current directory. Skipping download.\n", exeName)
+			fmt.Printf("[*] Found %s (version %s) - up to date.\n", exeName, localVersion)
 		}
 		return nil
 	} else if !os.IsNotExist(err) {

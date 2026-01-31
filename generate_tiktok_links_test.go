@@ -3154,6 +3154,152 @@ func TestIsFileOlderThan30Days(t *testing.T) {
 	})
 }
 
+// TestCompareVersions tests the version comparison function
+func TestCompareVersions(t *testing.T) {
+	tests := []struct {
+		name     string
+		local    string
+		remote   string
+		expected int
+	}{
+		{"equal versions", "2026.01.29", "2026.01.29", 0},
+		{"local older - year", "2025.01.29", "2026.01.29", -1},
+		{"local older - month", "2026.01.29", "2026.02.29", -1},
+		{"local older - day", "2026.01.28", "2026.01.29", -1},
+		{"local newer - year", "2026.01.29", "2025.01.29", 1},
+		{"local newer - month", "2026.02.29", "2026.01.29", 1},
+		{"local newer - day", "2026.01.30", "2026.01.29", 1},
+		{"empty local", "", "2026.01.29", -1},
+		{"empty remote", "2026.01.29", "", 1},
+		{"both empty", "", "", 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := compareVersions(tt.local, tt.remote)
+			if result != tt.expected {
+				t.Errorf("compareVersions(%q, %q) = %d, want %d", tt.local, tt.remote, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestGetLatestYtdlpVersion tests fetching the latest version from GitHub
+func TestGetLatestYtdlpVersion(t *testing.T) {
+	t.Run("successful redirect parsing", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/yt-dlp/yt-dlp/releases/latest" {
+				w.Header().Set("Location", "https://github.com/yt-dlp/yt-dlp/releases/tag/2026.01.29")
+				w.WriteHeader(http.StatusFound)
+				return
+			}
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer server.Close()
+
+		client := server.Client()
+		// Override the URL for testing by using a custom transport
+		originalTransport := client.Transport
+		client.Transport = &redirectTestTransport{
+			server:   server,
+			original: originalTransport,
+		}
+
+		version, err := getLatestYtdlpVersion(client)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if version != "2026.01.29" {
+			t.Errorf("expected version 2026.01.29, got %s", version)
+		}
+	})
+
+	t.Run("network error", func(t *testing.T) {
+		// Create a client with a transport that always fails
+		client := &http.Client{
+			Transport: &errorTransport{err: fmt.Errorf("network unreachable")},
+		}
+
+		_, err := getLatestYtdlpVersion(client)
+		if err == nil {
+			t.Error("expected error for network failure, got nil")
+		}
+	})
+
+	t.Run("unexpected status code", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK) // Should be 302, not 200
+		}))
+		defer server.Close()
+
+		client := server.Client()
+		client.Transport = &redirectTestTransport{server: server}
+
+		_, err := getLatestYtdlpVersion(client)
+		if err == nil {
+			t.Error("expected error for unexpected status code, got nil")
+		}
+	})
+
+	t.Run("missing location header", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusFound) // 302 but no Location header
+		}))
+		defer server.Close()
+
+		client := server.Client()
+		client.Transport = &redirectTestTransport{server: server}
+
+		_, err := getLatestYtdlpVersion(client)
+		if err == nil {
+			t.Error("expected error for missing location header, got nil")
+		}
+	})
+
+	t.Run("invalid redirect URL format", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Location", "https://github.com/yt-dlp/yt-dlp/releases/invalid")
+			w.WriteHeader(http.StatusFound)
+		}))
+		defer server.Close()
+
+		client := server.Client()
+		client.Transport = &redirectTestTransport{server: server}
+
+		_, err := getLatestYtdlpVersion(client)
+		if err == nil {
+			t.Error("expected error for invalid URL format, got nil")
+		}
+	})
+}
+
+// redirectTestTransport rewrites GitHub URLs to use the test server
+type redirectTestTransport struct {
+	server   *httptest.Server
+	original http.RoundTripper
+}
+
+func (t *redirectTestTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	// Rewrite the URL to point to our test server
+	if strings.Contains(req.URL.Host, "github.com") {
+		req.URL.Scheme = "http"
+		req.URL.Host = strings.TrimPrefix(t.server.URL, "http://")
+	}
+	if t.original != nil {
+		return t.original.RoundTrip(req)
+	}
+	return http.DefaultTransport.RoundTrip(req)
+}
+
+// errorTransport is an http.RoundTripper that always returns an error
+type errorTransport struct {
+	err error
+}
+
+func (t *errorTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	return nil, t.err
+}
+
 // TestBackupYtdlp tests the backup functionality
 func TestBackupYtdlp(t *testing.T) {
 	tmpDir := t.TempDir()
