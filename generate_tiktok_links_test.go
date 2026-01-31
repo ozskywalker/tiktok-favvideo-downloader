@@ -3674,13 +3674,19 @@ func TestParseArchiveFile(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Failed to create temp file: %v", err)
 			}
-			defer os.Remove(tmpFile.Name())
+			defer func() {
+				if removeErr := os.Remove(tmpFile.Name()); removeErr != nil {
+					t.Logf("Warning: failed to remove temp file: %v", removeErr)
+				}
+			}()
 
 			// Write test content
 			if _, err := tmpFile.WriteString(tt.archiveContent); err != nil {
 				t.Fatalf("Failed to write to temp file: %v", err)
 			}
-			tmpFile.Close()
+			if err := tmpFile.Close(); err != nil {
+				t.Fatalf("Failed to close temp file: %v", err)
+			}
 
 			// Parse archive
 			archive, err := parseArchiveFile(tmpFile.Name())
@@ -3799,13 +3805,19 @@ func TestShouldSkipCollection(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Failed to create temp file: %v", err)
 			}
-			defer os.Remove(tmpFile.Name())
+			defer func() {
+				if removeErr := os.Remove(tmpFile.Name()); removeErr != nil {
+					t.Logf("Warning: failed to remove temp file: %v", removeErr)
+				}
+			}()
 
 			// Write test content
 			if _, err := tmpFile.WriteString(tt.archiveContent); err != nil {
 				t.Fatalf("Failed to write to temp file: %v", err)
 			}
-			tmpFile.Close()
+			if err := tmpFile.Close(); err != nil {
+				t.Fatalf("Failed to close temp file: %v", err)
+			}
 
 			// Check if should skip
 			shouldSkip, msg, err := shouldSkipCollection(tt.entries, tmpFile.Name())

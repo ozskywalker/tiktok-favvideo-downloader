@@ -432,7 +432,11 @@ func parseArchiveFile(archivePath string) (map[string]bool, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open archive file %s: %v", archivePath, err)
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to close archive file: %v\n", closeErr)
+		}
+	}()
 
 	archive := make(map[string]bool)
 	scanner := bufio.NewScanner(file)
