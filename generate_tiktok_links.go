@@ -183,8 +183,8 @@ type Config struct {
 	IncludeLiked         bool
 	SkipThumbnails       bool
 	IndexOnly            bool
-	DisableResume        bool   // Disable resume functionality (force re-download all videos)
-	DisableProgressBar   bool   // Disable progress bar (use traditional line-by-line output)
+	DisableResume        bool // Disable resume functionality (force re-download all videos)
+	DisableProgressBar   bool // Disable progress bar (use traditional line-by-line output)
 	JSONFile             string
 	OutputName           string
 	CookieFile           string // Path to Netscape cookies.txt file
@@ -557,10 +557,6 @@ func (r *RealCommandRunner) Run(name string, args ...string) (CapturedOutput, er
 
 			// Check for progress line if progress rendering is enabled
 			if r.ProgressRenderer != nil && r.ProgressState != nil {
-<<<<<<< HEAD
-				// Check for skip line (already downloaded videos)
-				// Check this FIRST because skip messages come before download progress messages
-=======
 				current, total, isProgress, err := parseProgressLine(line)
 				if err == nil && isProgress {
 					// Update progress state
@@ -572,7 +568,6 @@ func (r *RealCommandRunner) Run(name string, args ...string) (CapturedOutput, er
 				}
 
 				// Check for skip line (already downloaded videos)
->>>>>>> 79ecdc46d83951569420d908c0db6e26f430523e
 				if isSkipLine(line) {
 					// Increment progress for skipped videos
 					r.ProgressState.CurrentIndex++
@@ -581,21 +576,6 @@ func (r *RealCommandRunner) Run(name string, args ...string) (CapturedOutput, er
 					r.ProgressRenderer.renderProgress(r.ProgressState)
 					continue // Don't print skip lines when using progress bar
 				}
-<<<<<<< HEAD
-
-				_, _, isProgress, err := parseProgressLine(line)
-				if err == nil && isProgress {
-					// Update progress state
-					// Note: yt-dlp's "Downloading item X of Y" only counts items being downloaded (not archived)
-					// We track overall progress including skipped items, so increment instead of setting
-					r.ProgressState.CurrentIndex++
-					r.ProgressState.SuccessCount++
-					// Render progress bar
-					r.ProgressRenderer.renderProgress(r.ProgressState)
-					continue // Don't print progress lines when using progress bar
-				}
-=======
->>>>>>> 79ecdc46d83951569420d908c0db6e26f430523e
 			}
 
 			// For non-progress lines or when progress bar is disabled
@@ -617,7 +597,7 @@ func (r *RealCommandRunner) Run(name string, args ...string) (CapturedOutput, er
 		scanner := bufio.NewScanner(stderrPipe)
 		for scanner.Scan() {
 			line := scanner.Text()
-			fmt.Fprintln(os.Stderr, line) // Display line
+			fmt.Fprintln(os.Stderr, line)      // Display line
 			stderrBuf.WriteString(line + "\n") // Capture line
 		}
 		done <- true
