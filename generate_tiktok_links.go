@@ -418,6 +418,124 @@ func extractVideoID(url string) string {
 	return ""
 }
 
+// parseArchiveFile reads yt-dlp's download archive file and returns
+// a set of video IDs that have been successfully downloaded.
+// Archive format: "tiktok <video_id>" per line
+// Returns empty map (not error) if file doesn't exist - this is normal for first run.
+func parseArchiveFile(archivePath string) (map[string]bool, error) {
+	// Check if archive exists
+	if _, err := os.Stat(archivePath); os.IsNotExist(err) {
+		return make(map[string]bool), nil // Empty archive, not an error
+	}
+
+	file, err := os.Open(archivePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open archive file %s: %v", archivePath, err)
+	}
+	defer file.Close()
+
+	archive := make(map[string]bool)
+	scanner := bufio.NewScanner(file)
+	lineNum := 0
+
+	for scanner.Scan() {
+		lineNum++
+		line := strings.TrimSpace(scanner.Text())
+
+		// Skip empty lines
+		if line == "" {
+			continue
+		}
+
+		// Parse "tiktok <video_id>" format
+		parts := strings.Fields(line)
+		if len(parts) != 2 {
+			fmt.Printf("[!] Warning: Malformed archive line %d in %s: %s\n",
+				lineNum, archivePath, line)
+			continue
+		}
+
+		if parts[0] != "tiktok" {
+			fmt.Printf("[!] Warning: Unknown platform %s at line %d in %s\n",
+				parts[0], lineNum, archivePath)
+			continue
+		}
+
+		videoID := parts[1]
+
+		// Basic validation: video ID should be numeric
+		if _, err := strconv.ParseInt(videoID, 10, 64); err != nil {
+			fmt.Printf("[!] Warning: Invalid video ID %s at line %d in %s\n",
+				videoID, lineNum, archivePath)
+			continue
+		}
+
+		archive[videoID] = true
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("error reading archive file %s: %v", archivePath, err)
+	}
+
+	return archive, nil
+}
+
+// shouldSkipCollection determines if all videos in a collection are already
+// downloaded by checking the archive file. Returns true only if 100% of videos
+// are in the archive.
+//
+// Returns:
+//   - bool: true if yt-dlp can be skipped (all videos downloaded)
+//   - string: informational message for user
+//   - error: error parsing archive (caller should fall back to calling yt-dlp)
+func shouldSkipCollection(entries []VideoEntry, archivePath string) (bool, string, error) {
+	// Empty collection - nothing to download
+	if len(entries) == 0 {
+		return true, "Empty collection", nil
+	}
+
+	// Parse archive file
+	archive, err := parseArchiveFile(archivePath)
+	if err != nil {
+		// Error parsing archive - be conservative, call yt-dlp
+		return false, "", err
+	}
+
+	// Empty archive - need to download everything
+	if len(archive) == 0 {
+		msg := fmt.Sprintf("No videos in archive, %d videos need download", len(entries))
+		return false, msg, nil
+	}
+
+	// Extract video IDs from all entries and check against archive
+	var missingIDs []string
+	for _, entry := range entries {
+		videoID := extractVideoID(entry.Link)
+
+		// If we can't extract video ID, be conservative - don't skip
+		if videoID == "" {
+			msg := fmt.Sprintf("Could not parse video ID from URL: %s", entry.Link)
+			return false, msg, nil
+		}
+
+		// Check if video is in archive
+		if !archive[videoID] {
+			missingIDs = append(missingIDs, videoID)
+		}
+	}
+
+	// All videos in archive - safe to skip
+	if len(missingIDs) == 0 {
+		msg := fmt.Sprintf("All %d videos already downloaded", len(entries))
+		return true, msg, nil
+	}
+
+	// Partial match - need to call yt-dlp
+	msg := fmt.Sprintf("%d new videos need download (out of %d total)",
+		len(missingIDs), len(entries))
+	return false, msg, nil
+}
+
 // parseInfoJSON reads a yt-dlp .info.json file and extracts metadata
 func parseInfoJSON(infoPath string) (*YtdlpInfo, error) {
 	data, err := os.ReadFile(infoPath)
@@ -1051,6 +1169,47 @@ func runYtdlp(psPrefix, outputName string, organizeByCollection, skipThumbnails,
 
 // runYtdlpWithRunner allows dependency injection for testing
 func runYtdlpWithRunner(runner CommandRunner, psPrefix, outputName string, organizeByCollection, skipThumbnails, disableResume bool, cookieFile, cookieFromBrowser string, entries []VideoEntry) (*CollectionResult, error) {
+	collectionName := filepath.Base(filepath.Dir(outputName))
+	if collectionName == "." {
+		collectionName = "videos"
+	}
+
+	// Pre-check optimization if resume is enabled
+	if !disableResume {
+		// Calculate archive file path (matches logic below at lines 1159-1165)
+		var archivePath string
+		if organizeByCollection {
+			dir := filepath.Dir(outputName)
+			archivePath = filepath.Join(dir, "download_archive.txt")
+		} else {
+			archivePath = "download_archive.txt"
+		}
+
+		// Check if all videos already downloaded
+		shouldSkip, msg, err := shouldSkipCollection(entries, archivePath)
+
+		if err != nil {
+			// Error parsing archive - log warning but continue with yt-dlp
+			fmt.Printf("[!] Warning: Could not parse archive file, proceeding with yt-dlp: %v\n", err)
+		} else if shouldSkip {
+			// All videos already downloaded - skip yt-dlp entirely
+			fmt.Printf("[*] %s collection: %s (skipping yt-dlp)\n",
+				collectionName, msg)
+
+			// Return successful result without calling yt-dlp
+			return &CollectionResult{
+				Name:           collectionName,
+				Attempted:      len(entries),
+				Failed:         0,
+				Success:        len(entries),
+				FailureDetails: []FailureDetail{},
+			}, nil
+		} else {
+			// Partial download needed - inform user
+			fmt.Printf("[*] %s collection: %s\n", collectionName, msg)
+		}
+	}
+
 	fmt.Println("[*] Running yt-dlp now...")
 	cmdStr := fmt.Sprintf("%syt-dlp.exe", psPrefix)
 

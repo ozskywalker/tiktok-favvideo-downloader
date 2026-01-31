@@ -3465,3 +3465,340 @@ func TestProgressRenderer(t *testing.T) {
 		renderer.clearProgress()
 	})
 }
+
+// TestParseArchiveFile tests the parseArchiveFile function with various inputs
+func TestParseArchiveFile(t *testing.T) {
+	tests := []struct {
+		name           string
+		archiveContent string
+		wantIDs        []string
+		wantErr        bool
+	}{
+		{
+			name:           "valid archive with multiple entries",
+			archiveContent: "tiktok 7600559584901647646\ntiktok 7600559584901647647\n",
+			wantIDs:        []string{"7600559584901647646", "7600559584901647647"},
+			wantErr:        false,
+		},
+		{
+			name:           "empty archive file",
+			archiveContent: "",
+			wantIDs:        []string{},
+			wantErr:        false,
+		},
+		{
+			name:           "archive with malformed lines (should skip bad lines)",
+			archiveContent: "tiktok 123\nbadline\ntiktok 456\n",
+			wantIDs:        []string{"123", "456"},
+			wantErr:        false,
+		},
+		{
+			name:           "archive with whitespace and empty lines",
+			archiveContent: "tiktok 123\n\n  \ntiktok 456\n",
+			wantIDs:        []string{"123", "456"},
+			wantErr:        false,
+		},
+		{
+			name:           "archive with non-numeric video IDs",
+			archiveContent: "tiktok 123\ntiktok abc\ntiktok 456\n",
+			wantIDs:        []string{"123", "456"},
+			wantErr:        false,
+		},
+		{
+			name:           "archive with wrong platform",
+			archiveContent: "tiktok 123\nyoutube 789\ntiktok 456\n",
+			wantIDs:        []string{"123", "456"},
+			wantErr:        false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create temporary archive file
+			tmpFile, err := os.CreateTemp("", "archive_*.txt")
+			if err != nil {
+				t.Fatalf("Failed to create temp file: %v", err)
+			}
+			defer os.Remove(tmpFile.Name())
+
+			// Write test content
+			if _, err := tmpFile.WriteString(tt.archiveContent); err != nil {
+				t.Fatalf("Failed to write to temp file: %v", err)
+			}
+			tmpFile.Close()
+
+			// Parse archive
+			archive, err := parseArchiveFile(tmpFile.Name())
+
+			// Check error expectation
+			if (err != nil) != tt.wantErr {
+				t.Errorf("parseArchiveFile() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+
+			// Check that all expected IDs are present
+			if len(tt.wantIDs) != len(archive) {
+				t.Errorf("parseArchiveFile() got %d IDs, want %d", len(archive), len(tt.wantIDs))
+			}
+
+			for _, id := range tt.wantIDs {
+				if !archive[id] {
+					t.Errorf("parseArchiveFile() missing expected ID: %s", id)
+				}
+			}
+		})
+	}
+}
+
+// TestParseArchiveFileNotExist tests that non-existent files return empty map
+func TestParseArchiveFileNotExist(t *testing.T) {
+	// Non-existent file should return empty map, no error
+	archive, err := parseArchiveFile("/nonexistent/path/archive_test_12345.txt")
+	if err != nil {
+		t.Errorf("Expected no error for missing file, got: %v", err)
+	}
+	if len(archive) != 0 {
+		t.Errorf("Expected empty map, got %d entries", len(archive))
+	}
+}
+
+// TestShouldSkipCollection tests the shouldSkipCollection function
+func TestShouldSkipCollection(t *testing.T) {
+	tests := []struct {
+		name            string
+		entries         []VideoEntry
+		archiveContent  string
+		wantSkip        bool
+		wantMsgContains string
+	}{
+		{
+			name: "all videos in archive - should skip",
+			entries: []VideoEntry{
+				{Link: "https://www.tiktok.com/@user/video/123"},
+				{Link: "https://www.tiktok.com/@user/video/456"},
+			},
+			archiveContent:  "tiktok 123\ntiktok 456\n",
+			wantSkip:        true,
+			wantMsgContains: "All 2 videos already downloaded",
+		},
+		{
+			name: "partial match - should not skip",
+			entries: []VideoEntry{
+				{Link: "https://www.tiktok.com/@user/video/123"},
+				{Link: "https://www.tiktok.com/@user/video/456"},
+			},
+			archiveContent:  "tiktok 123\n",
+			wantSkip:        false,
+			wantMsgContains: "1 new videos need download",
+		},
+		{
+			name: "empty archive - should not skip",
+			entries: []VideoEntry{
+				{Link: "https://www.tiktok.com/@user/video/123"},
+			},
+			archiveContent:  "",
+			wantSkip:        false,
+			wantMsgContains: "No videos in archive",
+		},
+		{
+			name:            "empty collection - should skip",
+			entries:         []VideoEntry{},
+			archiveContent:  "tiktok 123\n",
+			wantSkip:        true,
+			wantMsgContains: "Empty collection",
+		},
+		{
+			name: "unparseable URL with empty archive - should not skip (conservative)",
+			entries: []VideoEntry{
+				{Link: "https://invalid-url.com/bad"},
+			},
+			archiveContent:  "",
+			wantSkip:        false,
+			wantMsgContains: "No videos in archive",
+		},
+		{
+			name: "unparseable URL with existing archive - should not skip (conservative)",
+			entries: []VideoEntry{
+				{Link: "https://invalid-url.com/bad"},
+			},
+			archiveContent:  "tiktok 999\n",
+			wantSkip:        false,
+			wantMsgContains: "Could not parse video ID",
+		},
+		{
+			name: "all videos downloaded with different URL format",
+			entries: []VideoEntry{
+				{Link: "https://m.tiktok.com/v/123.html"},
+				{Link: "https://www.tiktok.com/@user/video/456"},
+			},
+			archiveContent:  "tiktok 123\ntiktok 456\n",
+			wantSkip:        true,
+			wantMsgContains: "All 2 videos already downloaded",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create temporary archive file
+			tmpFile, err := os.CreateTemp("", "archive_*.txt")
+			if err != nil {
+				t.Fatalf("Failed to create temp file: %v", err)
+			}
+			defer os.Remove(tmpFile.Name())
+
+			// Write test content
+			if _, err := tmpFile.WriteString(tt.archiveContent); err != nil {
+				t.Fatalf("Failed to write to temp file: %v", err)
+			}
+			tmpFile.Close()
+
+			// Check if should skip
+			shouldSkip, msg, err := shouldSkipCollection(tt.entries, tmpFile.Name())
+
+			// Should not error for these test cases
+			if err != nil {
+				t.Errorf("shouldSkipCollection() unexpected error: %v", err)
+				return
+			}
+
+			if shouldSkip != tt.wantSkip {
+				t.Errorf("shouldSkipCollection() = %v, want %v", shouldSkip, tt.wantSkip)
+			}
+
+			if !strings.Contains(msg, tt.wantMsgContains) {
+				t.Errorf("shouldSkipCollection() message = %q, want to contain %q", msg, tt.wantMsgContains)
+			}
+		})
+	}
+}
+
+// TestRunYtdlpWithSkipOptimization tests that yt-dlp is NOT called when all videos downloaded
+func TestRunYtdlpWithSkipOptimization(t *testing.T) {
+	// Create temp directory for test
+	tempDir := t.TempDir()
+
+	// Create archive with video already downloaded
+	archivePath := filepath.Join(tempDir, "download_archive.txt")
+	if err := os.WriteFile(archivePath, []byte("tiktok 123\n"), 0644); err != nil {
+		t.Fatalf("Failed to create archive file: %v", err)
+	}
+
+	// Create mock runner that tracks calls
+	mockRunner := &MockCommandRunner{
+		ShouldFail: false,
+	}
+
+	entries := []VideoEntry{
+		{Link: "https://www.tiktok.com/@user/video/123"},
+	}
+
+	outputName := filepath.Join(tempDir, "fav_videos.txt")
+
+	// Call runYtdlpWithRunner with disableResume=false (optimization enabled)
+	result, err := runYtdlpWithRunner(mockRunner, "", outputName,
+		true, false, false, "", "", entries)
+
+	// Should not error
+	if err != nil {
+		t.Errorf("runYtdlpWithRunner() unexpected error: %v", err)
+	}
+
+	// Verify yt-dlp was NOT called (optimization worked)
+	if len(mockRunner.Commands) > 0 {
+		t.Errorf("Expected 0 yt-dlp calls (optimization), got %d", len(mockRunner.Commands))
+	}
+
+	// Verify result shows success
+	if result.Success != 1 || result.Failed != 0 {
+		t.Errorf("Expected 1 success 0 failed, got %d success %d failed",
+			result.Success, result.Failed)
+	}
+
+	if result.Attempted != 1 {
+		t.Errorf("Expected 1 attempted, got %d", result.Attempted)
+	}
+}
+
+// TestRunYtdlpWithDisableResume tests that pre-check is bypassed when --disable-resume is set
+func TestRunYtdlpWithDisableResume(t *testing.T) {
+	// Create temp directory for test
+	tempDir := t.TempDir()
+
+	// Create archive with video already downloaded
+	archivePath := filepath.Join(tempDir, "download_archive.txt")
+	if err := os.WriteFile(archivePath, []byte("tiktok 123\n"), 0644); err != nil {
+		t.Fatalf("Failed to create archive file: %v", err)
+	}
+
+	// Create URL file
+	outputName := filepath.Join(tempDir, "fav_videos.txt")
+	if err := os.WriteFile(outputName, []byte("https://www.tiktok.com/@user/video/123\n"), 0644); err != nil {
+		t.Fatalf("Failed to create URL file: %v", err)
+	}
+
+	// Create mock runner that tracks calls
+	mockRunner := &MockCommandRunner{
+		ShouldFail: false,
+	}
+
+	entries := []VideoEntry{
+		{Link: "https://www.tiktok.com/@user/video/123"},
+	}
+
+	// Call with disableResume=true (optimization should be bypassed)
+	_, err := runYtdlpWithRunner(mockRunner, "", outputName,
+		true, false, true, "", "", entries)
+
+	// Should not error
+	if err != nil {
+		t.Errorf("runYtdlpWithRunner() unexpected error: %v", err)
+	}
+
+	// Verify yt-dlp WAS called (skip optimization bypassed)
+	if len(mockRunner.Commands) != 1 {
+		t.Errorf("Expected 1 yt-dlp call (bypass optimization), got %d", len(mockRunner.Commands))
+	}
+}
+
+// TestRunYtdlpPartialDownload tests that yt-dlp is called for partial downloads
+func TestRunYtdlpPartialDownload(t *testing.T) {
+	// Create temp directory for test
+	tempDir := t.TempDir()
+
+	// Create archive with only one video
+	archivePath := filepath.Join(tempDir, "download_archive.txt")
+	if err := os.WriteFile(archivePath, []byte("tiktok 123\n"), 0644); err != nil {
+		t.Fatalf("Failed to create archive file: %v", err)
+	}
+
+	// Create URL file with both videos
+	outputName := filepath.Join(tempDir, "fav_videos.txt")
+	urlContent := "https://www.tiktok.com/@user/video/123\nhttps://www.tiktok.com/@user/video/456\n"
+	if err := os.WriteFile(outputName, []byte(urlContent), 0644); err != nil {
+		t.Fatalf("Failed to create URL file: %v", err)
+	}
+
+	// Create mock runner
+	mockRunner := &MockCommandRunner{
+		ShouldFail: false,
+	}
+
+	entries := []VideoEntry{
+		{Link: "https://www.tiktok.com/@user/video/123"},
+		{Link: "https://www.tiktok.com/@user/video/456"},
+	}
+
+	// Call with disableResume=false (optimization enabled but should still call yt-dlp)
+	_, err := runYtdlpWithRunner(mockRunner, "", outputName,
+		true, false, false, "", "", entries)
+
+	// Should not error
+	if err != nil {
+		t.Errorf("runYtdlpWithRunner() unexpected error: %v", err)
+	}
+
+	// Verify yt-dlp WAS called (partial download detected)
+	if len(mockRunner.Commands) != 1 {
+		t.Errorf("Expected 1 yt-dlp call (partial download), got %d", len(mockRunner.Commands))
+	}
+}
