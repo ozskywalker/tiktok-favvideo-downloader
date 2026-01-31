@@ -28,7 +28,130 @@ tiktok-favvideo-downloader.exe --no-thumbnails
 
 # Regenerate indexes without re-downloading videos
 tiktok-favvideo-downloader.exe --index-only
+
+# Use cookies from file for age-restricted videos
+tiktok-favvideo-downloader.exe --cookies cookies.txt
+
+# Extract cookies from Chrome browser
+tiktok-favvideo-downloader.exe --cookies-from-browser chrome
+
+# Combine with other flags
+tiktok-favvideo-downloader.exe --cookies-from-browser firefox --no-thumbnails
+
+# Disable resume functionality (force re-download all videos)
+tiktok-favvideo-downloader.exe --disable-resume
+
+# Disable progress bar (use traditional line-by-line output)
+tiktok-favvideo-downloader.exe --no-progress-bar
 ```
+
+### Real-Time Progress Bar (New!)
+
+**By default, the application displays a live progress bar during downloads showing:**
+- Current progress: "Downloading favorites (87/92)"
+- Visual progress bar: "████████████░░░ 94.6%"
+- Success and failure counts in real-time
+- Colored output (green for success, red for failures)
+
+**Example output:**
+```
+Downloading favorites (87/92) | ████████████░░░ 94.6% | Success: 85 | Failed: 2
+```
+
+**How It Works:**
+- Automatically enabled when terminal supports ANSI escape codes
+- Parses yt-dlp's "[download] Downloading item X of Y" progress messages
+- Updates progress bar in real-time without cluttering output
+- **Intelligent output filtering**: Suppresses verbose yt-dlp messages (URL extraction, webpage downloads, redirects, etc.) to reduce noise
+- Important messages (errors, warnings) are always displayed
+- Progress bar auto-clears when download completes
+
+**Disabling the Progress Bar:**
+Use `--no-progress-bar` flag to revert to traditional line-by-line output:
+```bash
+tiktok-favvideo-downloader.exe --no-progress-bar
+```
+
+This is useful for:
+- Piped output or redirected logs
+- Terminals that don't support ANSI codes
+- Debugging or viewing full yt-dlp output (shows all verbose messages)
+- Running in background or automated scripts
+
+**Terminal Compatibility:**
+- Automatically detects ANSI support (Windows Terminal, ConEmu, modern terminals)
+- Auto-disables on: piped output, old Command Prompt, non-terminal environments
+- No configuration needed - works out of the box on supported terminals
+
+**Output Filtering:**
+When the progress bar is enabled (default), verbose yt-dlp messages are automatically suppressed to provide a clean, calm user experience:
+
+**Suppressed messages** (routine informational output):
+- `[generic] Extracting URL:` - URL extraction
+- `[generic] VIDEO_ID: Downloading webpage` - Webpage downloads
+- `[redirect] Following redirect to` - URL redirects
+- `[TikTok] Extracting URL:` - Platform-specific extraction
+- `[TikTok] VIDEO_ID: Downloading webpage` - Platform-specific downloads
+- `[info] VIDEO_ID: Downloading 1 format(s):` - Format selection
+- `[info] Video thumbnail is already present` - Already-handled status
+- `[info] Video metadata is already present` - Already-handled status
+- `[download] 100% of X.XXMiB` - Download completion (redundant with progress bar)
+
+**Always displayed** (important feedback):
+- `ERROR:` messages - Critical failures
+- `WARNING:` messages - Potential issues
+- Any other non-routine output
+
+**Result**: ~90% reduction in output noise (from 10+ lines per video to 0-1 lines per video). For a download of 2,217 videos, this reduces output from 20,000+ lines to under 50 lines.
+
+Use `--no-progress-bar` to see all yt-dlp output for debugging purposes.
+
+### Resume Download Functionality
+
+**By default, the application automatically resumes downloads and skips already-downloaded videos.**
+
+This prevents:
+- Wasted bandwidth from re-downloading existing videos
+- IP rate-limiting from excessive requests to TikTok
+- Unnecessary storage usage
+
+**How It Works**:
+- Uses yt-dlp's `--download-archive` flag to maintain a list of downloaded video IDs
+- Archive files are created automatically:
+  - Collection mode: `favorites/download_archive.txt`, `liked/download_archive.txt`
+  - Flat mode: `download_archive.txt` in root directory
+- Each archive file contains one line per video: `tiktok <video_id>`
+- Videos in the archive are automatically skipped on subsequent runs
+- Partial downloads (`.part` files) are automatically resumed via `--continue` flag
+
+**Skip Optimization (New in v1.7.0)**:
+- Application pre-checks the archive file before calling yt-dlp
+- If ALL videos in a collection are already downloaded, yt-dlp is skipped entirely
+- Provides 40-100x faster re-runs when all videos downloaded (2-5 seconds → <100ms)
+- Conservative approach: if ANY video needs download, calls yt-dlp normally
+- Optimization bypassed when using `--disable-resume` flag
+- Example output:
+  ```
+  [*] favorites collection: All 92 videos already downloaded (skipping yt-dlp)
+  [*] liked collection: 10 new videos need download (out of 35 total)
+  ```
+
+**Archive File Management**:
+- Archive files are created automatically on first run
+- Safe to manually edit - remove a line to force re-download of that specific video
+- Safe to delete entire archive file to force full re-download of all videos
+- Compatible with yt-dlp's standard archive format
+
+**Disabling Resume**:
+Use `--disable-resume` flag to force re-download of all videos (ignores archive):
+```bash
+tiktok-favvideo-downloader.exe --disable-resume
+```
+
+This is useful for:
+- Forcing re-download of all videos (e.g., after format changes)
+- Testing download functionality
+- Replacing corrupted or incomplete downloads
 
 ### Collection Directory Structure
 ```
@@ -38,6 +161,7 @@ project-folder/
 │
 ├── favorites/                                        # Favorited videos collection
 │   ├── fav_videos.txt                               # URL list (yt-dlp compatible)
+│   ├── download_archive.txt                         # Resume tracking (skips downloaded videos)
 │   ├── index.json                                   # Machine-readable metadata index
 │   ├── index.html                                   # Visual browser (open in Chrome)
 │   ├── 20260129_7600559584901647646_Funny_Cat.mp4   # Video file
@@ -47,6 +171,7 @@ project-folder/
 │
 └── liked/                                           # Liked videos collection (if opted in)
     ├── liked_videos.txt                             # Note: different filename for liked
+    ├── download_archive.txt                         # Resume tracking for liked videos
     ├── index.json
     ├── index.html
     └── ...
@@ -247,11 +372,29 @@ This is a single-package Go application (`package main`) that downloads TikTok f
 
 3. **yt-dlp Integration**: Downloads and manages the yt-dlp executable
    - `getOrDownloadYtdlp()` automatically downloads latest yt-dlp.exe from GitHub if not present
-   - `runYtdlp()` executes yt-dlp with `--write-info-json` and optional `--write-thumbnail` flags
+   - `runYtdlp()` executes yt-dlp with multiple flags:
+     - `--write-info-json` - Save metadata for each video
+     - `--write-thumbnail` - Download thumbnails (optional via `--no-thumbnails`)
+     - `--download-archive` - Track downloaded videos for resume functionality (default)
+     - `--no-overwrites` - Skip re-downloading existing files (default)
+     - `--continue` - Resume partial downloads (default)
    - Supports `--no-thumbnails` flag to skip thumbnail downloads
+   - Supports `--cookies` and `--cookies-from-browser` flags for age-restricted videos
+   - Supports `--disable-resume` flag to force re-download all videos
+   - Supports `--no-progress-bar` flag to disable real-time progress display
    - New filename format includes video ID and truncated title
 
-4. **Video Metadata & Indexing**: Generates browsable indexes after download
+4. **Real-Time Progress Bar**: Live download progress visualization
+   - `ProgressState` struct tracks current download progress (current index, total, success/failure counts)
+   - `ProgressRenderer` struct handles ANSI-based progress display with color codes
+   - `parseProgressLine()` extracts progress from yt-dlp's "[download] Downloading item X of Y" messages
+   - `supportsANSI()` detects terminal ANSI support (Windows Terminal, ConEmu, standard terminals)
+   - `renderProgress()` displays live progress bar using ANSI escape codes (\r for line rewrite, color codes)
+   - `RealCommandRunner` performs line-by-line output processing via `bufio.Scanner`
+   - Auto-disables on piped output or terminals without ANSI support
+   - Progress bar updates in real-time without cluttering output with repeated messages
+
+5. **Video Metadata & Indexing**: Generates browsable indexes after download
    - `YtdlpInfo` struct for parsing yt-dlp's .info.json files
    - `CollectionIndex` struct for the complete collection metadata
    - `extractVideoID()` parses video IDs from TikTok URLs
@@ -260,7 +403,7 @@ This is a single-package Go application (`package main`) that downloads TikTok f
    - `getEntriesForCollection()` filters entries by collection name
    - HTML template with search, filter, and embedded video player
 
-5. **Download Session Reporting**: Tracks and reports download results
+6. **Download Session Reporting**: Tracks and reports download results
    - `CapturedOutput` struct stores yt-dlp stdout/stderr for parsing
    - `DownloadSession` and `CollectionResult` structs track session statistics
    - `FailureDetail` struct captures per-video error information
@@ -270,13 +413,16 @@ This is a single-package Go application (`package main`) that downloads TikTok f
    - `writeResultsFile()` appends detailed results to results.txt with troubleshooting tips
    - Uses `io.MultiWriter` to capture output while still displaying real-time progress
 
-6. **CLI Flag Parsing**: Command-line argument handling
-   - `parseFlags()` handles `--flat-structure`, `--no-thumbnails`, `--index-only`, `--help` flags
+7. **CLI Flag Parsing**: Command-line argument handling
+   - `parseFlags()` handles `--flat-structure`, `--no-thumbnails`, `--index-only`, `--disable-resume`, `--no-progress-bar`, `--cookies`, `--cookies-from-browser`, `--help` flags
    - `Config` struct stores application configuration
    - Supports positional arguments for custom JSON file paths
    - `--index-only` mode regenerates indexes from existing .info.json files without downloading
+   - `--disable-resume` mode forces re-download of all videos (ignores download archive)
+   - `--no-progress-bar` mode disables real-time progress bar (traditional line-by-line output)
+   - Cookie validation functions: `validateCookieFile()`, `validateBrowserName()`, `promptForCookies()`
 
-6. **Cross-platform Command Execution**: Handles PowerShell vs Command Prompt differences
+8. **Cross-platform Command Execution**: Handles PowerShell vs Command Prompt differences
    - `isRunningInPowershell()` detects PowerShell environment
    - Adjusts command prefixes accordingly (`.\` for PowerShell)
 

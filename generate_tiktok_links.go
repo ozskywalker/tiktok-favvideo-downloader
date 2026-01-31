@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -96,6 +97,7 @@ type DownloadSession struct {
 	TotalAttempted int
 	TotalSuccess   int
 	TotalFailed    int
+	TotalSkipped   int
 }
 
 // CollectionResult tracks results for a single collection
@@ -104,6 +106,7 @@ type CollectionResult struct {
 	Attempted      int
 	Success        int
 	Failed         int
+	Skipped        int
 	FailureDetails []FailureDetail
 }
 
@@ -161,35 +164,99 @@ type Data struct {
 	} `json:"Likes and Favorites"`
 }
 
+// ProgressState tracks real-time download progress for display
+type ProgressState struct {
+	CollectionName string
+	CurrentIndex   int
+	TotalVideos    int
+	SuccessCount   int
+	FailureCount   int
+	SkippedCount   int
+	InitialSkipped int
+}
+
+// ProgressRenderer handles ANSI-based progress display
+type ProgressRenderer struct {
+	enabled     bool      // false if terminal doesn't support ANSI or user disabled it
+	lastLineLen int       // track last line length for proper clearing
+	writer      io.Writer // where to write output (defaults to os.Stdout)
+}
+
 // Config holds the application configuration
 type Config struct {
 	OrganizeByCollection bool
 	IncludeLiked         bool
 	SkipThumbnails       bool
 	IndexOnly            bool
+	DisableResume        bool // Disable resume functionality (force re-download all videos)
+	DisableProgressBar   bool // Disable progress bar (use traditional line-by-line output)
 	JSONFile             string
 	OutputName           string
+	CookieFile           string // Path to Netscape cookies.txt file
+	CookieFromBrowser    string // Browser name (chrome, firefox, edge, safari, etc.)
 }
 
-// getOrDownloadYtdlp checks if yt-dlp.exe is present in the current directory.
-// If not, it downloads the latest version from GitHub. Accepts an *http.Client
-// so we can mock the download in tests.
-func getOrDownloadYtdlp(client *http.Client, exeName string) error {
-	// Check if the file already exists
-	if _, err := os.Stat(exeName); err == nil {
-		fmt.Printf("[*] Found %s in the current directory. Skipping download.\n", exeName)
-		return nil
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("[!!!] error checking for existing %s: %v", exeName, err)
+// isFileOlderThan30Days checks if a file's modification time is more than 30 days old
+func isFileOlderThan30Days(path string) (bool, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false, err
 	}
 
-	fmt.Printf("[*] %s not found. Downloading the latest release from GitHub...\n", exeName)
+	modTime := info.ModTime()
+	thirtyDaysAgo := time.Now().AddDate(0, 0, -30)
+
+	return modTime.Before(thirtyDaysAgo), nil
+}
+
+// promptForUpdate asks the user if they want to update yt-dlp.exe
+// Returns true if user wants to update (default is yes)
+func promptForUpdate() bool {
+	fmt.Print("[*] A newer version of yt-dlp may be available. Would you like to download it? (Y/n, default is 'Y'): ")
+
+	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Scan()
+	input := strings.TrimSpace(strings.ToLower(scanner.Text()))
+
+	// Default to yes if input is empty or explicitly yes
+	if input == "" || input == "y" || input == "yes" {
+		return true
+	}
+
+	return false
+}
+
+// backupYtdlp backs up the current yt-dlp.exe to yt-dlp.exe.old
+// Deletes existing .old file if it exists
+func backupYtdlp(exeName string) error {
+	oldFileName := exeName + ".old"
+
+	// Delete existing .old file if it exists
+	if _, err := os.Stat(oldFileName); err == nil {
+		fmt.Printf("[*] Removing old backup file: %s\n", oldFileName)
+		if err := os.Remove(oldFileName); err != nil {
+			return fmt.Errorf("failed to delete existing %s: %v", oldFileName, err)
+		}
+	}
+
+	// Rename current exe to .old
+	fmt.Printf("[*] Backing up current %s to %s\n", exeName, oldFileName)
+	if err := os.Rename(exeName, oldFileName); err != nil {
+		return fmt.Errorf("failed to rename %s to %s: %v", exeName, oldFileName, err)
+	}
+
+	return nil
+}
+
+// downloadLatestYtdlp downloads the latest version of yt-dlp from GitHub
+func downloadLatestYtdlp(client *http.Client, exeName string) error {
+	fmt.Printf("[*] Downloading the latest release from GitHub...\n")
 
 	// 1. Retrieve the latest release info from GitHub
 	releaseURL := "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest"
 	resp, err := client.Get(releaseURL)
 	if err != nil {
-		return fmt.Errorf("[!!!] failed to fetch the latest release info: %v", err)
+		return fmt.Errorf("failed to fetch the latest release info: %v", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -200,7 +267,7 @@ func getOrDownloadYtdlp(client *http.Client, exeName string) error {
 		} `json:"assets"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
-		return fmt.Errorf("[!!!] failed to parse GitHub API release JSON: %v", err)
+		return fmt.Errorf("failed to parse GitHub API release JSON: %v", err)
 	}
 
 	// 2. Find the asset with name "yt-dlp.exe"
@@ -212,7 +279,7 @@ func getOrDownloadYtdlp(client *http.Client, exeName string) error {
 		}
 	}
 	if downloadURL == "" {
-		return fmt.Errorf("[!!!] could not find %s in the latest release assets", exeName)
+		return fmt.Errorf("could not find %s in the latest release assets", exeName)
 	}
 
 	fmt.Printf("[*] Downloading %s...\n", downloadURL)
@@ -220,23 +287,73 @@ func getOrDownloadYtdlp(client *http.Client, exeName string) error {
 	// 3. Download the file
 	out, err := os.Create(exeName)
 	if err != nil {
-		return fmt.Errorf("[!!!] error creating %s: %v", exeName, err)
+		return fmt.Errorf("error creating %s: %v", exeName, err)
 	}
 	defer func() { _ = out.Close() }()
 
 	downloadResp, err := client.Get(downloadURL)
 	if err != nil {
-		return fmt.Errorf("[!!!] failed to download %s: %v", exeName, err)
+		return fmt.Errorf("failed to download %s: %v", exeName, err)
 	}
 	defer func() { _ = downloadResp.Body.Close() }()
 
 	// 4. Copy the response body to the file
 	if _, err := io.Copy(out, downloadResp.Body); err != nil {
-		return fmt.Errorf("[!!!] failed to write %s to disk: %v", exeName, err)
+		return fmt.Errorf("failed to write %s to disk: %v", exeName, err)
 	}
 
 	fmt.Println("[*] Successfully downloaded yt-dlp")
 	return nil
+}
+
+// getOrDownloadYtdlp checks if yt-dlp.exe is present in the current directory.
+// If not, it downloads the latest version from GitHub.
+// If it exists but is older than 30 days, prompts user to update.
+// Accepts an *http.Client so we can mock the download in tests.
+func getOrDownloadYtdlp(client *http.Client, exeName string) error {
+	// Check if the file already exists
+	if _, err := os.Stat(exeName); err == nil {
+		// File exists - check if it's older than 30 days
+		isOld, err := isFileOlderThan30Days(exeName)
+		if err != nil {
+			fmt.Printf("[!] Warning: Could not check file age: %v\n", err)
+			fmt.Printf("[*] Found %s in the current directory. Continuing with existing version.\n", exeName)
+			return nil
+		}
+
+		if isOld {
+			// Prompt user for update
+			if promptForUpdate() {
+				// User wants to update - backup current version
+				if err := backupYtdlp(exeName); err != nil {
+					return fmt.Errorf("backup failed: %v", err)
+				}
+
+				// Download new version
+				if err := downloadLatestYtdlp(client, exeName); err != nil {
+					// Download failed - try to restore backup
+					fmt.Printf("[!] Download failed: %v\n", err)
+					fmt.Printf("[*] Attempting to restore backup...\n")
+					if restoreErr := os.Rename(exeName+".old", exeName); restoreErr != nil {
+						return fmt.Errorf("download failed and could not restore backup: %v (restore error: %v)", err, restoreErr)
+					}
+					fmt.Printf("[*] Backup restored. Continuing with existing version.\n")
+					return nil
+				}
+			} else {
+				fmt.Printf("[*] Continuing with existing %s.\n", exeName)
+			}
+		} else {
+			fmt.Printf("[*] Found %s in the current directory. Skipping download.\n", exeName)
+		}
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("error checking for existing %s: %v", exeName, err)
+	}
+
+	// File doesn't exist - download it
+	fmt.Printf("[*] %s not found. Downloading the latest release from GitHub...\n", exeName)
+	return downloadLatestYtdlp(client, exeName)
 }
 
 // parseFavoriteVideosFromFile reads the given JSON file and returns the list of video entries.
@@ -304,6 +421,128 @@ func extractVideoID(url string) string {
 		}
 	}
 	return ""
+}
+
+// parseArchiveFile reads yt-dlp's download archive file and returns
+// a set of video IDs that have been successfully downloaded.
+// Archive format: "tiktok <video_id>" per line
+// Returns empty map (not error) if file doesn't exist - this is normal for first run.
+func parseArchiveFile(archivePath string) (map[string]bool, error) {
+	// Check if archive exists
+	if _, err := os.Stat(archivePath); os.IsNotExist(err) {
+		return make(map[string]bool), nil // Empty archive, not an error
+	}
+
+	file, err := os.Open(archivePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open archive file %s: %v", archivePath, err)
+	}
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to close archive file: %v\n", closeErr)
+		}
+	}()
+
+	archive := make(map[string]bool)
+	scanner := bufio.NewScanner(file)
+	lineNum := 0
+
+	for scanner.Scan() {
+		lineNum++
+		line := strings.TrimSpace(scanner.Text())
+
+		// Skip empty lines
+		if line == "" {
+			continue
+		}
+
+		// Parse "tiktok <video_id>" format
+		parts := strings.Fields(line)
+		if len(parts) != 2 {
+			fmt.Printf("[!] Warning: Malformed archive line %d in %s: %s\n",
+				lineNum, archivePath, line)
+			continue
+		}
+
+		if parts[0] != "tiktok" {
+			fmt.Printf("[!] Warning: Unknown platform %s at line %d in %s\n",
+				parts[0], lineNum, archivePath)
+			continue
+		}
+
+		videoID := parts[1]
+
+		// Basic validation: video ID should be numeric
+		if _, err := strconv.ParseInt(videoID, 10, 64); err != nil {
+			fmt.Printf("[!] Warning: Invalid video ID %s at line %d in %s\n",
+				videoID, lineNum, archivePath)
+			continue
+		}
+
+		archive[videoID] = true
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("error reading archive file %s: %v", archivePath, err)
+	}
+
+	return archive, nil
+}
+
+// shouldSkipCollection determines if all videos in a collection are already
+// downloaded by checking the archive file. Returns true only if 100% of videos
+// are in the archive.
+//
+// Returns:
+//   - bool: true if yt-dlp can be skipped (all videos downloaded)
+//   - string: informational message for user
+//   - error: error parsing archive (caller should fall back to calling yt-dlp)
+func shouldSkipCollection(entries []VideoEntry, archivePath string) (bool, string, error) {
+	// Empty collection - nothing to download
+	if len(entries) == 0 {
+		return true, "Empty collection", nil
+	}
+
+	// Parse archive file
+	archive, err := parseArchiveFile(archivePath)
+	if err != nil {
+		// Error parsing archive - be conservative, call yt-dlp
+		return false, "", err
+	}
+
+	// Empty archive - need to download everything
+	if len(archive) == 0 {
+		msg := fmt.Sprintf("No videos in archive, %d videos need download", len(entries))
+		return false, msg, nil
+	}
+
+	// Extract video IDs from all entries and check against archive
+	var missingIDs []string
+	for _, entry := range entries {
+		videoID := extractVideoID(entry.Link)
+
+		// If we can't extract video ID, be conservative - don't skip
+		if videoID == "" {
+			msg := fmt.Sprintf("Could not parse video ID from URL: %s", entry.Link)
+			return false, msg, nil
+		}
+
+		// Check if video is in archive
+		if !archive[videoID] {
+			missingIDs = append(missingIDs, videoID)
+		}
+	}
+
+	// All videos in archive - safe to skip
+	if len(missingIDs) == 0 {
+		msg := fmt.Sprintf("All %d videos already downloaded", len(entries))
+		return true, msg, nil
+	}
+
+	// Partial match - need to call yt-dlp
+	msg := fmt.Sprintf("%d new videos need download (out of %d total)",
+		len(missingIDs), len(entries))
+	return false, msg, nil
 }
 
 // parseInfoJSON reads a yt-dlp .info.json file and extracts metadata
@@ -408,27 +647,159 @@ type CommandRunner interface {
 }
 
 // RealCommandRunner implements CommandRunner using exec.Command
-type RealCommandRunner struct{}
+type RealCommandRunner struct {
+	ProgressRenderer *ProgressRenderer // Optional: if set, renders progress bar
+	ProgressState    *ProgressState    // Optional: if set, tracks progress
+}
 
 func (r *RealCommandRunner) Run(name string, args ...string) (CapturedOutput, error) {
 	cmd := exec.Command(name, args...)
 
 	var stdoutBuf, stderrBuf bytes.Buffer
 
-	// Use MultiWriter to both capture AND display output
-	cmd.Stdout = io.MultiWriter(os.Stdout, &stdoutBuf)
-	cmd.Stderr = io.MultiWriter(os.Stderr, &stderrBuf)
+	// Get stdout and stderr pipes for line-by-line reading
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return CapturedOutput{}, err
+	}
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		return CapturedOutput{}, err
+	}
 
-	err := cmd.Run()
+	// Start the command
+	if err := cmd.Start(); err != nil {
+		return CapturedOutput{}, err
+	}
+
+	// Process output using the extracted function
+	// We pass tee readers so we can capture the raw output while processing it
+	stdoutTee := io.TeeReader(stdoutPipe, &stdoutBuf)
+	stderrTee := io.TeeReader(stderrPipe, &stderrBuf)
+
+	// Note: processOutput now returns just error, as it doesn't build the CapturedOutput
+	// We build CapturedOutput here from the buffers
+	processErr := processOutput(stdoutTee, stderrTee, os.Stdout, os.Stderr, r.ProgressRenderer, r.ProgressState)
+
+	// Wait for command to complete
+	cmdErr := cmd.Wait()
 
 	// Combine output line-by-line
 	combined := combineOutputLines(stdoutBuf.String(), stderrBuf.String())
+
+	// Return command error if it failed, otherwise process error
+	finalErr := cmdErr
+	if finalErr == nil {
+		finalErr = processErr
+	}
 
 	return CapturedOutput{
 		Stdout:   stdoutBuf,
 		Stderr:   stderrBuf,
 		Combined: combined,
-	}, err
+	}, finalErr
+}
+
+// processOutput handles reading from stdout/stderr and updating progress
+// Separated from Run for testing purposes
+func processOutput(stdout, stderr io.Reader, stdoutWriter, stderrWriter io.Writer, renderer *ProgressRenderer, state *ProgressState) error {
+	// Process stdout and stderr line-by-line in goroutines
+	done := make(chan bool, 2)
+
+	// Process stdout
+	go func() {
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			line := scanner.Text()
+
+			// Check for progress line if progress rendering is enabled
+			if renderer != nil && state != nil {
+				current, _, isProgress, err := parseProgressLine(line)
+				if err == nil && isProgress {
+					// Update progress state
+					state.CurrentIndex = state.InitialSkipped + current
+					// state.TotalVideos is already set correctly
+					// Render progress bar
+					renderer.renderProgress(state)
+					continue // Don't print progress lines when using progress bar
+				}
+
+				// Check for skip line (already downloaded videos)
+				if isSkipLine(line) {
+					// Increment progress for skipped videos
+					state.CurrentIndex++
+					state.SkippedCount++
+					// Render progress bar
+					renderer.renderProgress(state)
+					continue // Don't print skip lines when using progress bar
+				}
+
+				// Check for error line (failed downloads)
+				if isErrorLine(line) {
+					// Increment failure count for errors
+					state.FailureCount++
+					// Don't render here - let it fall through to normal print logic
+					// which will clear, print, and re-render properly
+				}
+
+				// Check for verbose line when progress bar is enabled
+				if renderer.enabled && isVerboseLine(line) {
+					continue // Don't print verbose lines when using progress bar
+				}
+			}
+
+			// For non-progress lines or when progress bar is disabled
+			if renderer != nil && renderer.enabled {
+				// Clear progress bar before printing regular line
+				renderer.clearProgress()
+			}
+			_, _ = fmt.Fprintln(stdoutWriter, line) // Ignore errors writing to stdout
+			if renderer != nil && renderer.enabled {
+				// Re-render progress after printing line
+				renderer.renderProgress(state)
+			}
+		}
+		done <- true
+	}()
+
+	// Process stderr
+	go func() {
+		scanner := bufio.NewScanner(stderr)
+		for scanner.Scan() {
+			line := scanner.Text()
+
+			// Check for error line (failed downloads) when progress bar is enabled
+			if renderer != nil && state != nil {
+				if isErrorLine(line) {
+					// Increment failure count for errors
+					state.FailureCount++
+				}
+			}
+
+			// Clear progress bar before printing error line
+			if renderer != nil && renderer.enabled {
+				renderer.clearProgress()
+			}
+			_, _ = fmt.Fprintln(stderrWriter, line) // Display line
+			// Re-render progress bar after printing error line
+			if renderer != nil && renderer.enabled {
+				renderer.renderProgress(state)
+			}
+		}
+		done <- true
+	}()
+
+	// Wait for both goroutines to finish
+	<-done
+	<-done
+
+	// Clear progress bar when processing finishes
+	if renderer != nil {
+		renderer.clearProgress()
+		_, _ = fmt.Fprintln(stdoutWriter) // Add newline after clearing
+	}
+
+	return nil
 }
 
 // combineOutputLines merges stdout and stderr into a single line-by-line array
@@ -496,12 +867,193 @@ func categorizeError(errorMsg string) ErrorType {
 	return ErrorOther
 }
 
+// parseProgressLine extracts progress information from yt-dlp output
+// yt-dlp outputs progress lines like: "[download] Downloading item 5 of 127"
+// Returns: (currentIndex, total, isProgressLine, error)
+func parseProgressLine(line string) (int, int, bool, error) {
+	// Match pattern: [download] Downloading item X of Y
+	re := regexp.MustCompile(`\[download\] Downloading item (\d+) of (\d+)`)
+	matches := re.FindStringSubmatch(line)
+
+	if len(matches) != 3 {
+		return 0, 0, false, nil // Not a progress line
+	}
+
+	current, err1 := strconv.Atoi(matches[1])
+	total, err2 := strconv.Atoi(matches[2])
+
+	if err1 != nil || err2 != nil {
+		return 0, 0, false, fmt.Errorf("failed to parse progress numbers")
+	}
+
+	return current, total, true, nil
+}
+
+// isSkipLine detects when yt-dlp skips an already-downloaded video
+// yt-dlp outputs: "[download] <filename> has already been downloaded" or "has already been recorded in the archive"
+// Returns: true if this is a skip message
+func isSkipLine(line string) bool {
+	return strings.Contains(line, "has already been downloaded") ||
+		strings.Contains(line, "has already been recorded in the archive")
+}
+
+// isVerboseLine returns true if the line is routine yt-dlp output that can be suppressed
+// when progress bar is enabled. These are informational messages that add noise without value.
+// ERROR and WARNING messages are never considered verbose and will always be displayed.
+func isVerboseLine(line string) bool {
+	// Never suppress errors or warnings
+	if strings.Contains(line, "ERROR:") || strings.Contains(line, "WARNING:") {
+		return false
+	}
+
+	verbosePatterns := []string{
+		"[generic] Extracting URL:",
+		"[generic] ",
+		": Downloading webpage",
+		"[redirect] Following redirect to",
+		"[TikTok] Extracting URL:",
+		"[info] ",
+		": Downloading 1 format(s):",
+		"Video thumbnail is already present",
+		"Video metadata is already present",
+		"[download] 100%",
+	}
+
+	for _, pattern := range verbosePatterns {
+		if strings.Contains(line, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+// isErrorLine detects when yt-dlp encounters an error during download
+// yt-dlp outputs errors like: "ERROR: [TikTok] VIDEO_ID: error message"
+// Returns: true if this is an error message
+func isErrorLine(line string) bool {
+	return strings.Contains(line, "ERROR: [TikTok]")
+}
+
+// supportsANSI checks if the terminal supports ANSI escape codes
+func supportsANSI() bool {
+	// Check if stdout is a terminal (not piped or redirected)
+	fileInfo, err := os.Stdout.Stat()
+	if err != nil {
+		return false
+	}
+
+	// If output is piped or redirected, disable ANSI
+	if (fileInfo.Mode() & os.ModeCharDevice) == 0 {
+		return false
+	}
+
+	// Check for TERM environment variable (common on Unix-like systems)
+	term := os.Getenv("TERM")
+	if term != "" && term != "dumb" {
+		return true
+	}
+
+	// Check for Windows Terminal or other modern Windows terminals
+	// Windows Terminal sets WT_SESSION
+	if os.Getenv("WT_SESSION") != "" {
+		return true
+	}
+
+	// ConEmu sets ConEmuANSI
+	if os.Getenv("ConEmuANSI") == "ON" {
+		return true
+	}
+
+	// Default to false for safety (no progress bar if unsure)
+	return false
+}
+
+// renderProgress displays a live progress bar using ANSI escape codes
+// Format: "Downloading favorites (87/92) | ████████████░░░ 94.6% | Success: 85 | Failed: 2"
+func (pr *ProgressRenderer) renderProgress(state *ProgressState) {
+	if !pr.enabled {
+		return
+	}
+
+	// Default to stdout if no writer specified
+	out := pr.writer
+	if out == nil {
+		out = os.Stdout
+	}
+
+	// Calculate percentage
+	percentage := 0.0
+	if state.TotalVideos > 0 {
+		percentage = float64(state.CurrentIndex) / float64(state.TotalVideos) * 100
+	}
+
+	// Create progress bar (20 characters wide)
+	barWidth := 20
+	filledWidth := int(float64(barWidth) * percentage / 100)
+	if filledWidth > barWidth {
+		filledWidth = barWidth
+	}
+
+	bar := strings.Repeat("█", filledWidth) + strings.Repeat("░", barWidth-filledWidth)
+
+	// Color codes
+	green := "\033[32m"
+	yellow := "\033[33m"
+	red := "\033[31m"
+	reset := "\033[0m"
+
+	// Build progress line
+	line := fmt.Sprintf("\rDownloading %s (%d/%d) | %s %.1f%% | %sSuccess: %d%s | %sSkipped: %d%s | %sFailed: %d%s",
+		state.CollectionName,
+		state.CurrentIndex,
+		state.TotalVideos,
+		bar,
+		percentage,
+		green,
+		state.SuccessCount,
+		reset,
+		yellow,
+		state.SkippedCount,
+		reset,
+		red,
+		state.FailureCount,
+		reset,
+	)
+
+	// Clear previous line if it was longer
+	if len(line) < pr.lastLineLen {
+		line += strings.Repeat(" ", pr.lastLineLen-len(line))
+	}
+	pr.lastLineLen = len(line)
+
+	// Print progress (using \r to overwrite current line)
+	_, _ = fmt.Fprint(out, line)
+}
+
+// clearProgress clears the progress bar line
+func (pr *ProgressRenderer) clearProgress() {
+	if !pr.enabled || pr.lastLineLen == 0 {
+		return
+	}
+
+	// Default to stdout if no writer specified
+	out := pr.writer
+	if out == nil {
+		out = os.Stdout
+	}
+
+	// Clear line and move to start
+	_, _ = fmt.Fprint(out, "\r"+strings.Repeat(" ", pr.lastLineLen)+"\r")
+	pr.lastLineLen = 0
+}
+
 // calculateSessionTotals aggregates totals across all collections
-func calculateSessionTotals(collections []CollectionResult) (attempted, success, failed int) {
+func calculateSessionTotals(collections []CollectionResult) (attempted, success, failed, skipped int) {
 	for _, col := range collections {
 		attempted += col.Attempted
 		success += col.Success
 		failed += col.Failed
+		skipped += col.Skipped
 	}
 	return
 }
@@ -516,14 +1068,15 @@ func printSessionSummary(session *DownloadSession) {
 	fmt.Printf("Duration: %s\n", formatDuration(int(duration.Seconds())))
 	fmt.Printf("Total Videos Attempted: %d\n", session.TotalAttempted)
 	fmt.Printf("  ✓ Successfully Downloaded: %d\n", session.TotalSuccess)
+	fmt.Printf("  - Skipped (Already Downloaded): %d\n", session.TotalSkipped)
 	fmt.Printf("  ✗ Failed: %d\n\n", session.TotalFailed)
 
 	if len(session.Collections) > 1 {
 		fmt.Println("Collection Breakdown:")
 		for _, col := range session.Collections {
 			fmt.Printf("  %s:\n", col.Name)
-			fmt.Printf("    Attempted: %-4d | Success: %-4d | Failed: %d\n",
-				col.Attempted, col.Success, col.Failed)
+			fmt.Printf("    Attempted: %-4d | Success: %-4d | Skipped: %-4d | Failed: %d\n",
+				col.Attempted, col.Success, col.Skipped, col.Failed)
 		}
 		fmt.Println()
 	}
@@ -575,6 +1128,7 @@ func writeResultsFile(session *DownloadSession) error {
 	_, _ = fmt.Fprintf(w, "=======\n")
 	_, _ = fmt.Fprintf(w, "Total Videos Attempted: %d\n", session.TotalAttempted)
 	_, _ = fmt.Fprintf(w, "Successfully Downloaded: %d\n", session.TotalSuccess)
+	_, _ = fmt.Fprintf(w, "Skipped: %d\n", session.TotalSkipped)
 	_, _ = fmt.Fprintf(w, "Failed: %d\n\n", session.TotalFailed)
 
 	if session.TotalFailed == 0 {
@@ -630,8 +1184,12 @@ func writeTroubleshootingTips(w *bufio.Writer, session *DownloadSession) {
 
 	if count := errorCounts[ErrorAuthRequired]; count > 0 {
 		_, _ = fmt.Fprintf(w, "Authentication Required (%d videos):\n", count)
-		_, _ = fmt.Fprintf(w, "  - These videos require login to view\n")
-		_, _ = fmt.Fprintf(w, "  - You may need to download manually while logged in\n\n")
+		_, _ = fmt.Fprintf(w, "  - These videos require login to view (age-restricted content)\n")
+		_, _ = fmt.Fprintf(w, "  - Retry with cookies to download these videos:\n")
+		_, _ = fmt.Fprintf(w, "    * Use --cookies cookies.txt (Netscape format)\n")
+		_, _ = fmt.Fprintf(w, "    * OR use --cookies-from-browser firefox\n")
+		_, _ = fmt.Fprintf(w, "  - See: https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp\n")
+		_, _ = fmt.Fprintf(w, "    NB: cookies-from-browser may not work with Chromium-based browsers, refer to yt-dlp issue 7271 https://github.com/yt-dlp/yt-dlp/issues/7271\n\n")
 	}
 
 	if count := errorCounts[ErrorNotAvailable]; count > 0 {
@@ -648,12 +1206,99 @@ func writeTroubleshootingTips(w *bufio.Writer, session *DownloadSession) {
 }
 
 // runYtdlp runs the yt-dlp command for the user
-func runYtdlp(psPrefix, outputName string, organizeByCollection, skipThumbnails bool, entries []VideoEntry) (*CollectionResult, error) {
-	return runYtdlpWithRunner(&RealCommandRunner{}, psPrefix, outputName, organizeByCollection, skipThumbnails, entries)
+func runYtdlp(psPrefix, outputName string, organizeByCollection, skipThumbnails, disableResume, disableProgressBar bool, cookieFile, cookieFromBrowser string, entries []VideoEntry) (*CollectionResult, error) {
+	// Create progress renderer if enabled
+	var renderer *ProgressRenderer
+	var state *ProgressState
+	if !disableProgressBar && supportsANSI() {
+		collectionName := filepath.Base(filepath.Dir(outputName))
+		if collectionName == "." {
+			collectionName = "videos"
+		}
+		renderer = &ProgressRenderer{
+			enabled: true,
+			writer:  os.Stdout,
+		}
+		state = &ProgressState{
+			CollectionName: collectionName,
+			TotalVideos:    len(entries),
+		}
+	}
+
+	runner := &RealCommandRunner{
+		ProgressRenderer: renderer,
+		ProgressState:    state,
+	}
+
+	return runYtdlpWithRunner(runner, psPrefix, outputName, organizeByCollection, skipThumbnails, disableResume, cookieFile, cookieFromBrowser, entries)
 }
 
 // runYtdlpWithRunner allows dependency injection for testing
-func runYtdlpWithRunner(runner CommandRunner, psPrefix, outputName string, organizeByCollection, skipThumbnails bool, entries []VideoEntry) (*CollectionResult, error) {
+func runYtdlpWithRunner(runner CommandRunner, psPrefix, outputName string, organizeByCollection, skipThumbnails, disableResume bool, cookieFile, cookieFromBrowser string, entries []VideoEntry) (*CollectionResult, error) {
+	collectionName := filepath.Base(filepath.Dir(outputName))
+	if collectionName == "." {
+		collectionName = "videos"
+	}
+
+	// Calculate archive file path (matches logic below at lines 1159-1165)
+	var archivePath string
+	if organizeByCollection {
+		dir := filepath.Dir(outputName)
+		archivePath = filepath.Join(dir, "download_archive.txt")
+	} else {
+		archivePath = "download_archive.txt"
+	}
+
+	// Optimization: Filter out already downloaded videos if resume is enabled
+	videosToDownload := entries
+	skippedCount := 0
+
+	if !disableResume {
+		archive, err := parseArchiveFile(archivePath)
+		if err == nil && len(archive) > 0 {
+			var filtered []VideoEntry
+			for _, entry := range entries {
+				videoID := extractVideoID(entry.Link)
+				// If ID found and in archive, skip
+				if videoID != "" && archive[videoID] {
+					skippedCount++
+				} else {
+					filtered = append(filtered, entry)
+				}
+			}
+			videosToDownload = filtered
+		}
+	}
+
+	// Update ProgressState if available
+	if realRunner, ok := runner.(*RealCommandRunner); ok && realRunner.ProgressState != nil {
+		realRunner.ProgressState.InitialSkipped = skippedCount
+		realRunner.ProgressState.SkippedCount = skippedCount
+		realRunner.ProgressState.CurrentIndex = skippedCount
+		// TotalVideos remains len(entries)
+	}
+
+	// If all videos are skipped, we can return early
+	if len(videosToDownload) == 0 {
+		fmt.Printf("[*] %s collection: All %d videos already downloaded (skipping yt-dlp)\n",
+			collectionName, len(entries))
+
+		return &CollectionResult{
+			Name:           collectionName,
+			Attempted:      len(entries),
+			Failed:         0,
+			Success:        len(entries), // All considered success (skipped)
+			Skipped:        len(entries),
+			FailureDetails: []FailureDetail{},
+		}, nil
+	}
+
+	// If we have skipped some but not all, notify user
+	if skippedCount > 0 {
+		fmt.Printf("[*] %s collection: %d videos to download (%d skipped)\n",
+			collectionName, len(videosToDownload), skippedCount)
+	}
+
 	fmt.Println("[*] Running yt-dlp now...")
 	cmdStr := fmt.Sprintf("%syt-dlp.exe", psPrefix)
 
@@ -669,9 +1314,34 @@ func runYtdlpWithRunner(runner CommandRunner, psPrefix, outputName string, organ
 		outputFormat = "%(upload_date)s_%(id)s_%(title).50B.%(ext)s"
 	}
 
+	// Determine which file to pass to yt-dlp
+	targetFile := outputName
+
+	// If we filtered the list, write a temporary file
+	if skippedCount > 0 {
+		tempFile := outputName + ".partial.txt"
+		// Ensure directory exists (should already exist from main, but just in case)
+		if organizeByCollection {
+			_ = os.MkdirAll(filepath.Dir(tempFile), 0755)
+		}
+
+		if err := writeVideoEntriesToFile(videosToDownload, tempFile); err != nil {
+			fmt.Printf("[!] Warning: Failed to create partial list: %v. Using full list.\n", err)
+			// Fallback to full list, reset offsets
+			if realRunner, ok := runner.(*RealCommandRunner); ok && realRunner.ProgressState != nil {
+				realRunner.ProgressState.InitialSkipped = 0
+				realRunner.ProgressState.SkippedCount = 0
+				realRunner.ProgressState.CurrentIndex = 0
+			}
+		} else {
+			targetFile = tempFile
+			defer func() { _ = os.Remove(tempFile) }() // Clean up temp file
+		}
+	}
+
 	// Build yt-dlp arguments with metadata options
 	args := []string{
-		"-a", outputName,
+		"-a", targetFile,
 		"--output", outputFormat,
 		"--write-info-json", // Save metadata JSON for each video
 	}
@@ -679,28 +1349,61 @@ func runYtdlpWithRunner(runner CommandRunner, psPrefix, outputName string, organ
 	// Add thumbnail download unless skipped
 	if !skipThumbnails {
 		args = append(args, "--write-thumbnail")
+		args = append(args, "--convert-thumbnails", "jpg") // Ensure consistent .jpg extension
+	}
+
+	// Add cookie arguments if configured
+	if cookieFile != "" {
+		args = append(args, "--cookies", cookieFile)
+	}
+	if cookieFromBrowser != "" {
+		args = append(args, "--cookies-from-browser", cookieFromBrowser)
+	}
+
+	// Add resume functionality flags unless disabled
+	if !disableResume {
+		// Add flags for resume functionality
+		args = append(args, "--download-archive", archivePath)
+		args = append(args, "--no-overwrites")
+		args = append(args, "--continue")
 	}
 
 	// Execute and capture output
 	output, err := runner.Run(cmdStr, args...)
 
 	// Parse output to extract failures
-	failures := parseYtdlpOutput(output.Combined, entries)
+	failures := parseYtdlpOutput(output.Combined, videosToDownload)
 
 	// Build result summary
+	// Get final skipped count from state (includes those skipped by yt-dlp during run)
+	finalSkipped := skippedCount
+	if realRunner, ok := runner.(*RealCommandRunner); ok && realRunner.ProgressState != nil {
+		finalSkipped = realRunner.ProgressState.SkippedCount
+	}
+
 	result := &CollectionResult{
 		Name:           filepath.Base(filepath.Dir(outputName)),
 		Attempted:      len(entries),
 		Failed:         len(failures),
-		Success:        len(entries) - len(failures),
+		Success:        len(entries) - len(failures) - finalSkipped,
+		Skipped:        finalSkipped,
 		FailureDetails: failures,
+	}
+
+	// Safety check for negative success count
+	if result.Success < 0 {
+		result.Success = 0
 	}
 
 	if err != nil || len(failures) > 0 {
 		fmt.Printf("[!] Download completed with %d failures out of %d videos.\n",
-			result.Failed, result.Attempted)
+			result.Failed, len(videosToDownload))
 	} else {
-		fmt.Printf("[*] Successfully downloaded all %d videos.\n", result.Success)
+		if skippedCount > 0 {
+			fmt.Printf("[*] Successfully downloaded %d new videos.\n", result.Success)
+		} else {
+			fmt.Printf("[*] Successfully downloaded all %d videos.\n", result.Success)
+		}
 	}
 
 	return result, err
@@ -822,20 +1525,43 @@ func generateCollectionIndex(collectionDir string, entries []VideoEntry, failure
 			enrichedEntries[i].LikeCount = info.LikeCount
 			enrichedEntries[i].ThumbnailURL = info.Thumbnail
 
-			// Determine the local filename from the info
+			// Determine the local filename from the info (use basename only)
+			baseFilename := ""
 			if info.Filename != "" {
-				enrichedEntries[i].LocalFilename = filepath.Base(info.Filename)
+				// Normalize path separators before extracting basename
+				// yt-dlp may write Windows-style paths (\) in .info.json even on Unix systems
+				// (e.g., if the file was created on Windows and read on Linux, or vice versa)
+				normalizedFilename := strings.ReplaceAll(info.Filename, "\\", "/")
+				baseFilename = filepath.Base(normalizedFilename)
+				enrichedEntries[i].LocalFilename = baseFilename
+			} else {
+				// Fallback: If filename is not in .info.json, try to find the video file by video ID
+				// This handles cases where yt-dlp doesn't populate the filename field
+				// Look for files matching the pattern: *_<videoID>_*.mp4 (or other video extensions)
+				pattern := filepath.Join(collectionDir, fmt.Sprintf("*_%s_*", videoID))
+				matches, err := filepath.Glob(pattern + ".*")
+				if err == nil && len(matches) > 0 {
+					// Found potential matches - filter for video files (exclude .info.json, .part, .ytdl, etc.)
+					for _, match := range matches {
+						ext := strings.ToLower(filepath.Ext(match))
+						if ext == ".mp4" || ext == ".mkv" || ext == ".webm" || ext == ".mov" {
+							baseFilename = filepath.Base(match)
+							enrichedEntries[i].LocalFilename = baseFilename
+							break
+						}
+					}
+				}
 			}
 
 			// Check if video file actually exists (not just .info.json)
-			videoPath := filepath.Join(collectionDir, enrichedEntries[i].LocalFilename)
+			videoPath := filepath.Join(collectionDir, baseFilename)
 			partialPath := videoPath + ".part"
 
 			if _, err := os.Stat(partialPath); err == nil {
 				// Partial download exists
 				enrichedEntries[i].Downloaded = false
 				enrichedEntries[i].DownloadError = "Download incomplete (found .part file)"
-			} else if enrichedEntries[i].LocalFilename != "" {
+			} else if baseFilename != "" {
 				if _, err := os.Stat(videoPath); err == nil {
 					// Full video file exists
 					enrichedEntries[i].Downloaded = true
@@ -851,12 +1577,16 @@ func generateCollectionIndex(collectionDir string, entries []VideoEntry, failure
 			}
 
 			// Check for thumbnail file (try common extensions)
-			baseWithoutExt := strings.TrimSuffix(info.Filename, filepath.Ext(info.Filename))
-			for _, ext := range []string{".jpg", ".webp", ".png", ".JPG", ".WEBP", ".PNG"} {
-				thumbPath := baseWithoutExt + ext
-				if _, err := os.Stat(filepath.Join(collectionDir, filepath.Base(thumbPath))); err == nil {
-					enrichedEntries[i].ThumbnailFile = filepath.Base(thumbPath)
-					break
+			// Use the base filename (without extension) to search for thumbnails
+			if baseFilename != "" {
+				baseWithoutExt := strings.TrimSuffix(baseFilename, filepath.Ext(baseFilename))
+				for _, ext := range []string{".jpg", ".webp", ".png", ".JPG", ".WEBP", ".PNG"} {
+					thumbFilename := baseWithoutExt + ext
+					thumbPath := filepath.Join(collectionDir, thumbFilename)
+					if _, err := os.Stat(thumbPath); err == nil {
+						enrichedEntries[i].ThumbnailFile = thumbFilename
+						break
+					}
 				}
 			}
 		} else {
@@ -914,11 +1644,128 @@ func getEntriesForCollection(entries []VideoEntry, collection string) []VideoEnt
 func getExeName() string {
 	exePath, err := os.Executable()
 	if err != nil {
-		// If we can’t get the path, default to a known name
+		// If we can't get the path, default to a known name
 		return "tiktok-favvideo-downloader.exe"
 	}
 	// Otherwise, return the filename (base) part of the path
 	return filepath.Base(exePath)
+}
+
+// validateCookieFile checks if a cookie file exists and is readable
+func validateCookieFile(path string) error {
+	if path == "" {
+		return fmt.Errorf("cookie file path is empty")
+	}
+
+	// Check if file exists
+	stat, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("cookie file not found: %s", path)
+		}
+		return fmt.Errorf("error accessing cookie file: %v", err)
+	}
+
+	// Check it's not a directory
+	if stat.IsDir() {
+		return fmt.Errorf("path is a directory, not a file: %s", path)
+	}
+
+	// Check if file is readable
+	file, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("cannot read cookie file: %v", err)
+	}
+	defer func() { _ = file.Close() }()
+
+	// Optional: Check if file looks like Netscape cookie format
+	scanner := bufio.NewScanner(file)
+	if scanner.Scan() {
+		firstLine := scanner.Text()
+		if !strings.Contains(firstLine, "Netscape HTTP Cookie File") {
+			fmt.Println("[!] Warning: File doesn't appear to be in Netscape cookie format")
+			fmt.Println("    yt-dlp expects cookies in Netscape format")
+		}
+	}
+
+	return nil
+}
+
+// validateBrowserName checks if a browser name is valid for cookie extraction
+func validateBrowserName(browser string) error {
+	if browser == "" {
+		return fmt.Errorf("browser name is empty")
+	}
+
+	validBrowsers := []string{
+		"chrome", "firefox", "edge", "safari", "opera",
+		"brave", "chromium", "vivaldi",
+	}
+
+	browserLower := strings.ToLower(strings.TrimSpace(browser))
+
+	for _, valid := range validBrowsers {
+		if browserLower == valid {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("unsupported browser: %s\nValid options: %s",
+		browser, strings.Join(validBrowsers, ", "))
+}
+
+// promptForCookies interactively asks the user if they want to provide cookies
+func promptForCookies(config *Config) error {
+	fmt.Print("\n[*] Some videos require authentication to download (age-restricted content).\n")
+	fmt.Print("    Would you like to provide cookies for authentication? (y/n, default is 'n'): ")
+
+	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Scan()
+	input := strings.TrimSpace(strings.ToLower(scanner.Text()))
+
+	if input != "y" && input != "yes" {
+		return nil // User declined
+	}
+
+	// Ask for method
+	fmt.Println("\n[*] Choose cookie method:")
+	fmt.Println("    1) Use cookies.txt file (Netscape format)")
+	fmt.Println("    2) Extract from browser (Chrome, Firefox, Edge, etc.)")
+	fmt.Print("    Enter choice (1 or 2): ")
+
+	scanner.Scan()
+	choice := strings.TrimSpace(scanner.Text())
+
+	switch choice {
+	case "1":
+		fmt.Print("[*] Enter path to cookies.txt file: ")
+		scanner.Scan()
+		cookiePath := strings.TrimSpace(scanner.Text())
+
+		if err := validateCookieFile(cookiePath); err != nil {
+			return fmt.Errorf("cookie file validation failed: %w", err)
+		}
+
+		config.CookieFile = cookiePath
+		fmt.Println("[*] Using cookies from file:", cookiePath)
+
+	case "2":
+		fmt.Print("[*] Enter browser name (chrome, firefox, edge, safari, etc.): ")
+		scanner.Scan()
+		browser := strings.TrimSpace(scanner.Text())
+
+		if err := validateBrowserName(browser); err != nil {
+			return err
+		}
+
+		config.CookieFromBrowser = strings.ToLower(browser)
+		fmt.Printf("[*] Will extract cookies from %s browser\n", browser)
+
+	default:
+		return fmt.Errorf("invalid choice: %s (expected 1 or 2)", choice)
+	}
+
+	return nil
 }
 
 // parseFlags parses command line flags and returns configuration
@@ -931,6 +1778,10 @@ func parseFlags() *Config {
 	flatStructure := flag.Bool("flat-structure", false, "Disable collection organization (use flat directory structure)")
 	noThumbnails := flag.Bool("no-thumbnails", false, "Skip thumbnail download (faster, less storage)")
 	indexOnly := flag.Bool("index-only", false, "Regenerate indexes from existing .info.json files without downloading")
+	disableResume := flag.Bool("disable-resume", false, "Disable resume functionality (force re-download all videos)")
+	noProgressBar := flag.Bool("no-progress-bar", false, "Disable progress bar (use traditional line-by-line output)")
+	cookies := flag.String("cookies", "", "Path to Netscape cookies.txt file for authentication")
+	cookiesFromBrowser := flag.String("cookies-from-browser", "", "Extract cookies from browser (chrome, firefox, edge, safari, etc.)")
 	help := flag.Bool("help", false, "Show help message")
 	h := flag.Bool("h", false, "Show help message")
 
@@ -941,9 +1792,35 @@ func parseFlags() *Config {
 		os.Exit(0)
 	}
 
+	// Check mutual exclusivity of cookie flags
+	if *cookies != "" && *cookiesFromBrowser != "" {
+		fmt.Println("[!!!] Error: Cannot use both --cookies and --cookies-from-browser")
+		os.Exit(1)
+	}
+
 	config.OrganizeByCollection = !*flatStructure
 	config.SkipThumbnails = *noThumbnails
 	config.IndexOnly = *indexOnly
+	config.DisableResume = *disableResume
+	config.DisableProgressBar = *noProgressBar
+	config.CookieFile = *cookies
+	config.CookieFromBrowser = *cookiesFromBrowser
+
+	// Validate cookie file if provided
+	if config.CookieFile != "" {
+		if err := validateCookieFile(config.CookieFile); err != nil {
+			fmt.Printf("[!!!] Cookie file validation failed: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
+	// Validate browser name if provided
+	if config.CookieFromBrowser != "" {
+		if err := validateBrowserName(config.CookieFromBrowser); err != nil {
+			fmt.Printf("[!!!] %v\n", err)
+			os.Exit(1)
+		}
+	}
 
 	// Handle positional argument for JSON file
 	args := flag.Args()
@@ -963,10 +1840,14 @@ func printUsage() {
 	fmt.Println("\nUsage:")
 	fmt.Printf("  %s [flags] [optional path to user_data_tiktok.json]\n", exeName)
 	fmt.Println("\nFlags:")
-	fmt.Println("  --flat-structure     Disable collection organization (use flat directory structure)")
-	fmt.Println("  --no-thumbnails      Skip thumbnail download (faster, less storage)")
-	fmt.Println("  --index-only         Regenerate indexes from existing .info.json files")
-	fmt.Println("  --help, -h           Show this help message")
+	fmt.Println("  --flat-structure           Disable collection organization (use flat directory structure)")
+	fmt.Println("  --no-thumbnails            Skip thumbnail download (faster, less storage)")
+	fmt.Println("  --index-only               Regenerate indexes from existing .info.json files")
+	fmt.Println("  --disable-resume           Disable resume functionality (force re-download all videos)")
+	fmt.Println("  --no-progress-bar          Disable progress bar (use traditional line-by-line output)")
+	fmt.Println("  --cookies <FILE>           Path to Netscape cookies.txt file for authentication")
+	fmt.Println("  --cookies-from-browser <NAME>  Extract cookies from browser (chrome, firefox, edge, etc.)")
+	fmt.Println("  --help, -h                 Show this help message")
 	fmt.Println("\nExamples:")
 	fmt.Println("  1) Double-click (no arguments) if 'user_data_tiktok.json' is in the same folder.")
 	fmt.Printf("  2) Or drag & drop a JSON file onto '%s' to specify a different JSON file.\n", exeName)
@@ -974,6 +1855,10 @@ func printUsage() {
 	fmt.Printf("  4) Use flat structure: %s --flat-structure\n", exeName)
 	fmt.Printf("  5) Skip thumbnails: %s --no-thumbnails\n", exeName)
 	fmt.Printf("  6) Regenerate index only: %s --index-only\n", exeName)
+	fmt.Printf("  7) Force re-download all: %s --disable-resume\n", exeName)
+	fmt.Printf("  8) Disable progress bar: %s --no-progress-bar\n", exeName)
+	fmt.Printf("  9) Use cookies from file: %s --cookies cookies.txt\n", exeName)
+	fmt.Printf("  10) Extract cookies from Chrome: %s --cookies-from-browser chrome\n", exeName)
 	fmt.Println("\nCollection Organization (Default):")
 	fmt.Println("  Videos are organized into subdirectories by collection type:")
 	fmt.Println("    favorites/    - Your favorited videos")
@@ -1053,7 +1938,14 @@ func main() {
 		return
 	}
 
-	// Attempt to get or download yt-dlp.exe
+	// Check if yt-dlp already exists before attempting to get/download
+	// If it exists, we'll run it automatically later; if not, we'll ask the user
+	ytdlpExistedBefore := false
+	if _, err := os.Stat("yt-dlp.exe"); err == nil {
+		ytdlpExistedBefore = true
+	}
+
+	// Attempt to get or download yt-dlp.exe (handles updates for existing files)
 	if err := getOrDownloadYtdlp(http.DefaultClient, "yt-dlp.exe"); err != nil {
 		fmt.Printf("[!] Warning: %v\n", err)
 		// Not exiting here so you can still generate fav_videos.txt if needed
@@ -1066,6 +1958,15 @@ func main() {
 	// Update includeLiked to true if the input is "y"
 	if input == "y" || input == "yes" {
 		config.IncludeLiked = true
+	}
+
+	// Prompt for cookies if not provided via flags
+	if config.CookieFile == "" && config.CookieFromBrowser == "" {
+		if err := promptForCookies(config); err != nil {
+			fmt.Printf("[!!!] Cookie setup failed: %v\n", err)
+			fmt.Println("[*] Continuing without cookies...")
+			// Don't exit - continue with download attempt
+		}
 	}
 
 	// Extract video entries
@@ -1103,12 +2004,24 @@ func main() {
 		fmt.Printf("  %s\n", ytDlpCmd)
 	}
 
-	// Offer to run the command automatically
-	fmt.Print("\n*** Would you like me to run yt-dlp for you instead? (y/n): ")
-	answer := bufio.NewReader(os.Stdin)
-	response, _ := answer.ReadString('\n')
-	response = strings.TrimSpace(strings.ToLower(response))
-	if response == "y" || response == "yes" {
+	// If yt-dlp already existed, run automatically; otherwise ask user
+	shouldRunYtdlp := false
+	if ytdlpExistedBefore {
+		// yt-dlp already existed before we started - run automatically
+		fmt.Println("\n[*] Starting download with yt-dlp...")
+		shouldRunYtdlp = true
+	} else if _, err := os.Stat("yt-dlp.exe"); err == nil {
+		// yt-dlp was just downloaded by getOrDownloadYtdlp - ask user if they want to run it
+		fmt.Print("\n*** yt-dlp.exe was downloaded. Would you like me to run it for you? (y/n): ")
+		answer := bufio.NewReader(os.Stdin)
+		response, _ := answer.ReadString('\n')
+		response = strings.TrimSpace(strings.ToLower(response))
+		if response == "y" || response == "yes" {
+			shouldRunYtdlp = true
+		}
+	}
+
+	if shouldRunYtdlp {
 		// Initialize download session tracking
 		session := &DownloadSession{
 			StartTime:   time.Now(),
@@ -1128,7 +2041,7 @@ func main() {
 				collectionEntries := getEntriesForCollection(videoEntries, collection)
 
 				fmt.Printf("[*] Processing collection: %s\n", collection)
-				result, _ := runYtdlp(psPrefix, collectionOutputName, config.OrganizeByCollection, config.SkipThumbnails, collectionEntries)
+				result, _ := runYtdlp(psPrefix, collectionOutputName, config.OrganizeByCollection, config.SkipThumbnails, config.DisableResume, config.DisableProgressBar, config.CookieFile, config.CookieFromBrowser, collectionEntries)
 
 				// Track session results
 				if result != nil {
@@ -1148,7 +2061,7 @@ func main() {
 			}
 		} else {
 			// Flat structure
-			result, _ := runYtdlp(psPrefix, config.OutputName, config.OrganizeByCollection, config.SkipThumbnails, videoEntries)
+			result, _ := runYtdlp(psPrefix, config.OutputName, config.OrganizeByCollection, config.SkipThumbnails, config.DisableResume, config.DisableProgressBar, config.CookieFile, config.CookieFromBrowser, videoEntries)
 
 			// Track session results
 			if result != nil {
@@ -1173,12 +2086,11 @@ func main() {
 
 		// Finalize session
 		session.EndTime = time.Now()
-		session.TotalAttempted, session.TotalSuccess, session.TotalFailed =
+		session.TotalAttempted, session.TotalSuccess, session.TotalFailed, session.TotalSkipped =
 			calculateSessionTotals(session.Collections)
 
-		// Display summary
+		// Print summary
 		printSessionSummary(session)
-
 		// Write results.txt
 		if err := writeResultsFile(session); err != nil {
 			fmt.Printf("[!] Warning: Failed to write results.txt: %v\n", err)

@@ -7,7 +7,9 @@
       "Bash(git tag:*)",
       "WebSearch",
       "Bash(go build:*)",
-      "Bash(./tiktok-favvideo-downloader.exe --help)"
+      "Bash(./tiktok-favvideo-downloader.exe --help)",
+      "Bash(gh issue view:*)",
+      "Bash(golangci-lint run:*)"
     ],
     "deny": [],
     "ask": []
