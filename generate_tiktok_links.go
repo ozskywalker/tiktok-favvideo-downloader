@@ -557,17 +557,8 @@ func (r *RealCommandRunner) Run(name string, args ...string) (CapturedOutput, er
 
 			// Check for progress line if progress rendering is enabled
 			if r.ProgressRenderer != nil && r.ProgressState != nil {
-				current, total, isProgress, err := parseProgressLine(line)
-				if err == nil && isProgress {
-					// Update progress state
-					r.ProgressState.CurrentIndex = current
-					r.ProgressState.TotalVideos = total
-					// Render progress bar
-					r.ProgressRenderer.renderProgress(r.ProgressState)
-					continue // Don't print progress lines when using progress bar
-				}
-
 				// Check for skip line (already downloaded videos)
+				// Check this FIRST because skip messages come before download progress messages
 				if isSkipLine(line) {
 					// Increment progress for skipped videos
 					r.ProgressState.CurrentIndex++
@@ -575,6 +566,18 @@ func (r *RealCommandRunner) Run(name string, args ...string) (CapturedOutput, er
 					// Render progress bar
 					r.ProgressRenderer.renderProgress(r.ProgressState)
 					continue // Don't print skip lines when using progress bar
+				}
+
+				_, _, isProgress, err := parseProgressLine(line)
+				if err == nil && isProgress {
+					// Update progress state
+					// Note: yt-dlp's "Downloading item X of Y" only counts items being downloaded (not archived)
+					// We track overall progress including skipped items, so increment instead of setting
+					r.ProgressState.CurrentIndex++
+					r.ProgressState.SuccessCount++
+					// Render progress bar
+					r.ProgressRenderer.renderProgress(r.ProgressState)
+					continue // Don't print progress lines when using progress bar
 				}
 			}
 
