@@ -372,6 +372,11 @@ This is a single-package Go application (`package main`) that downloads TikTok f
 
 3. **yt-dlp Integration**: Downloads and manages the yt-dlp executable
    - `getOrDownloadYtdlp()` automatically downloads latest yt-dlp.exe from GitHub if not present
+   - Version checking: compares local `yt-dlp --version` output against GitHub releases/latest
+   - `getYtdlpVersion()` runs `yt-dlp --version` to get local version (YYYY.MM.DD format)
+   - `getLatestYtdlpVersion()` fetches latest version from GitHub releases redirect URL
+   - `compareVersions()` compares version strings to detect outdated installations
+   - `updateYtdlp()` runs `yt-dlp --update` for self-update (with manual download fallback)
    - `runYtdlp()` executes yt-dlp with multiple flags:
      - `--write-info-json` - Save metadata for each video
      - `--write-thumbnail` - Download thumbnails (optional via `--no-thumbnails`)
