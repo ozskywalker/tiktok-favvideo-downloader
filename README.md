@@ -21,6 +21,16 @@ Binary is not signed (didn't have time+budget), you WILL have to tell Windows yo
 ![screenshot1](https://github.com/ozskywalker/tiktok-favvideo-downloader/blob/main/readme_images/tiktok_download_data_options.png)
 ![screenshot2](https://github.com/ozskywalker/tiktok-favvideo-downloader/blob/main/readme_images/tiktok_ready_to_download.png)
 
+### If you get a "Maximum attempts" error when downloading...
+
+This may be required if you have MFA, and you find Tiktok complains of a maximum attempts error.
+
+1. Open Tiktok on Mobile
+2. Under Profile, Settings and Privacy, Account, tap on Download your data
+3. Go to the Download data tab, and hit the Download button from the request you created above.
+4. Upload the file to your desktop (try upload via google drive, onedrive, etc.)
+
+
 ## Second, feed your list into the utility
 1. [Download the .exe from the Releases page](https://github.com/ozskywalker/tiktok-favvideo-downloader/releases)
 2. Place the .exe in the **same extracted folder** as the JSON file
