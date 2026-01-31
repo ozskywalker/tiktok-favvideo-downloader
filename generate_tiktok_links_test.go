@@ -10,10 +10,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Test utility helpers to reduce code duplication
-
 
 // TestIsRunningInPowershell checks if isRunningInPowershell returns
 // true/false based on the environment variable. We manipulate the environment.
@@ -2858,5 +2858,303 @@ func TestParseFlagsCookies(t *testing.T) {
 		if config.OrganizeByCollection {
 			t.Error("expected OrganizeByCollection to be false")
 		}
+	})
+}
+
+// TestIsFileOlderThan30Days tests the age checking function
+func TestIsFileOlderThan30Days(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	t.Run("file older than 30 days", func(t *testing.T) {
+		// Create a test file
+		testFile := filepath.Join(tmpDir, "old_file.txt")
+		if err := os.WriteFile(testFile, []byte("test"), 0644); err != nil {
+			t.Fatalf("failed to create test file: %v", err)
+		}
+
+		// Set modification time to 31 days ago
+		oldTime := time.Now().AddDate(0, 0, -31)
+		if err := os.Chtimes(testFile, oldTime, oldTime); err != nil {
+			t.Fatalf("failed to set file time: %v", err)
+		}
+
+		isOld, err := isFileOlderThan30Days(testFile)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if !isOld {
+			t.Error("expected file to be older than 30 days")
+		}
+	})
+
+	t.Run("file newer than 30 days", func(t *testing.T) {
+		// Create a test file
+		testFile := filepath.Join(tmpDir, "new_file.txt")
+		if err := os.WriteFile(testFile, []byte("test"), 0644); err != nil {
+			t.Fatalf("failed to create test file: %v", err)
+		}
+
+		// Set modification time to 20 days ago
+		recentTime := time.Now().AddDate(0, 0, -20)
+		if err := os.Chtimes(testFile, recentTime, recentTime); err != nil {
+			t.Fatalf("failed to set file time: %v", err)
+		}
+
+		isOld, err := isFileOlderThan30Days(testFile)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if isOld {
+			t.Error("expected file to not be older than 30 days")
+		}
+	})
+
+	t.Run("file does not exist", func(t *testing.T) {
+		nonExistentFile := filepath.Join(tmpDir, "does_not_exist.txt")
+
+		_, err := isFileOlderThan30Days(nonExistentFile)
+		if err == nil {
+			t.Error("expected error for non-existent file, got nil")
+		}
+	})
+
+	t.Run("file exactly 30 days old", func(t *testing.T) {
+		testFile := filepath.Join(tmpDir, "exact_30_days.txt")
+		if err := os.WriteFile(testFile, []byte("test"), 0644); err != nil {
+			t.Fatalf("failed to create test file: %v", err)
+		}
+
+		// Set modification time to exactly 30 days ago
+		// Due to timing precision, this might not be exactly before the threshold
+		exactTime := time.Now().AddDate(0, 0, -30).Add(-time.Second)
+		if err := os.Chtimes(testFile, exactTime, exactTime); err != nil {
+			t.Fatalf("failed to set file time: %v", err)
+		}
+
+		isOld, err := isFileOlderThan30Days(testFile)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		// File just over 30 days old should be considered old
+		if !isOld {
+			t.Error("expected file over 30 days old to be considered old")
+		}
+	})
+}
+
+// TestBackupYtdlp tests the backup functionality
+func TestBackupYtdlp(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldCwd, _ := os.Getwd()
+	defer func() { _ = os.Chdir(oldCwd) }()
+
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("failed to chdir to temp dir: %v", err)
+	}
+
+	t.Run("backup without existing .old file", func(t *testing.T) {
+		exeName := "test1.exe"
+		content := []byte("current version")
+
+		// Create current exe
+		if err := os.WriteFile(exeName, content, 0644); err != nil {
+			t.Fatalf("failed to create test exe: %v", err)
+		}
+
+		// Backup
+		if err := backupYtdlp(exeName); err != nil {
+			t.Errorf("backup failed: %v", err)
+		}
+
+		// Verify backup exists
+		oldFileName := exeName + ".old"
+		backupContent, err := os.ReadFile(oldFileName)
+		if err != nil {
+			t.Errorf("failed to read backup file: %v", err)
+		}
+		if string(backupContent) != string(content) {
+			t.Errorf("backup content mismatch: expected %q, got %q", content, backupContent)
+		}
+
+		// Verify original is gone
+		if _, err := os.Stat(exeName); !os.IsNotExist(err) {
+			t.Error("expected original file to be removed")
+		}
+
+		// Cleanup
+		_ = os.Remove(oldFileName)
+	})
+
+	t.Run("backup with existing .old file", func(t *testing.T) {
+		exeName := "test2.exe"
+		currentContent := []byte("new version")
+		oldContent := []byte("very old version")
+
+		// Create old backup
+		oldFileName := exeName + ".old"
+		if err := os.WriteFile(oldFileName, oldContent, 0644); err != nil {
+			t.Fatalf("failed to create old backup: %v", err)
+		}
+
+		// Create current exe
+		if err := os.WriteFile(exeName, currentContent, 0644); err != nil {
+			t.Fatalf("failed to create test exe: %v", err)
+		}
+
+		// Backup
+		if err := backupYtdlp(exeName); err != nil {
+			t.Errorf("backup failed: %v", err)
+		}
+
+		// Verify new backup contains current content (not old content)
+		backupContent, err := os.ReadFile(oldFileName)
+		if err != nil {
+			t.Errorf("failed to read backup file: %v", err)
+		}
+		if string(backupContent) != string(currentContent) {
+			t.Errorf("backup content mismatch: expected %q, got %q", currentContent, backupContent)
+		}
+		if string(backupContent) == string(oldContent) {
+			t.Error("backup still contains old content, should be replaced")
+		}
+
+		// Cleanup
+		_ = os.Remove(oldFileName)
+	})
+
+	t.Run("backup non-existent file", func(t *testing.T) {
+		exeName := "nonexistent.exe"
+
+		err := backupYtdlp(exeName)
+		if err == nil {
+			t.Error("expected error when backing up non-existent file")
+		}
+	})
+}
+
+// TestDownloadLatestYtdlp tests the download function
+func TestDownloadLatestYtdlp(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldCwd, _ := os.Getwd()
+	defer func() { _ = os.Chdir(oldCwd) }()
+
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("failed to chdir to temp dir: %v", err)
+	}
+
+	exeName := "yt-dlp.exe"
+
+	// Mock release JSON
+	mockReleaseJSON := `{
+		"assets": [
+			{
+				"name": "yt-dlp.exe",
+				"browser_download_url": "http://example.com/yt-dlp.exe"
+			}
+		]
+	}`
+
+	// Create test server
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/yt-dlp/yt-dlp/releases/latest", func(w http.ResponseWriter, r *http.Request) {
+		if _, err := w.Write([]byte(mockReleaseJSON)); err != nil {
+			t.Fatalf("failed to write mock release JSON: %v", err)
+		}
+	})
+	mux.HandleFunc("/yt-dlp.exe", func(w http.ResponseWriter, r *http.Request) {
+		if _, err := w.Write([]byte("fake exe content")); err != nil {
+			t.Fatalf("failed to write fake exe: %v", err)
+		}
+	})
+
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	// Custom client with URL rewriting
+	customClient := &http.Client{
+		Transport: &rewriterRoundTripper{
+			rt:   http.DefaultTransport,
+			host: ts.URL,
+		},
+	}
+
+	// Test download
+	if err := downloadLatestYtdlp(customClient, exeName); err != nil {
+		t.Errorf("download failed: %v", err)
+	}
+
+	// Verify file was created
+	content, err := os.ReadFile(exeName)
+	if err != nil {
+		t.Errorf("failed to read downloaded file: %v", err)
+	}
+	if string(content) != "fake exe content" {
+		t.Errorf("downloaded content mismatch: got %q", content)
+	}
+}
+
+// TestGetOrDownloadYtdlpWithAgeCheck tests the complete flow including 30-day check
+func TestGetOrDownloadYtdlpWithAgeCheck(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldCwd, _ := os.Getwd()
+	defer func() { _ = os.Chdir(oldCwd) }()
+
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("failed to chdir to temp dir: %v", err)
+	}
+
+	exeName := "yt-dlp.exe"
+
+	t.Run("file newer than 30 days - no prompt", func(t *testing.T) {
+		// Create a file less than 30 days old
+		if err := os.WriteFile(exeName, []byte("current version"), 0644); err != nil {
+			t.Fatalf("failed to create test file: %v", err)
+		}
+		defer func() { _ = os.Remove(exeName) }()
+
+		// Set modification time to 15 days ago
+		recentTime := time.Now().AddDate(0, 0, -15)
+		if err := os.Chtimes(exeName, recentTime, recentTime); err != nil {
+			t.Fatalf("failed to set file time: %v", err)
+		}
+
+		// Should not attempt download
+		client := http.DefaultClient
+		if err := getOrDownloadYtdlp(client, exeName); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+
+		// File should still exist with same content
+		content, _ := os.ReadFile(exeName)
+		if string(content) != "current version" {
+			t.Error("file was modified when it shouldn't have been")
+		}
+	})
+
+	t.Run("file older than 30 days - requires manual test for prompt", func(t *testing.T) {
+		// Note: Full testing of the prompt interaction would require mocking stdin
+		// which is complex. This test just verifies the age detection works.
+		if err := os.WriteFile(exeName, []byte("old version"), 0644); err != nil {
+			t.Fatalf("failed to create test file: %v", err)
+		}
+		defer func() { _ = os.Remove(exeName) }()
+
+		// Set modification time to 31 days ago
+		oldTime := time.Now().AddDate(0, 0, -31)
+		if err := os.Chtimes(exeName, oldTime, oldTime); err != nil {
+			t.Fatalf("failed to set file time: %v", err)
+		}
+
+		// Verify file is detected as old
+		isOld, err := isFileOlderThan30Days(exeName)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if !isOld {
+			t.Error("expected file to be detected as older than 30 days")
+		}
+
+		// Note: We can't fully test the prompt flow in automated tests
+		// because it requires stdin interaction. Manual testing required.
 	})
 }

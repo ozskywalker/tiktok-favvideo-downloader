@@ -173,25 +173,67 @@ type Config struct {
 	CookieFromBrowser    string // Browser name (chrome, firefox, edge, safari, etc.)
 }
 
-// getOrDownloadYtdlp checks if yt-dlp.exe is present in the current directory.
-// If not, it downloads the latest version from GitHub. Accepts an *http.Client
-// so we can mock the download in tests.
-func getOrDownloadYtdlp(client *http.Client, exeName string) error {
-	// Check if the file already exists
-	if _, err := os.Stat(exeName); err == nil {
-		fmt.Printf("[*] Found %s in the current directory. Skipping download.\n", exeName)
-		return nil
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("[!!!] error checking for existing %s: %v", exeName, err)
+// isFileOlderThan30Days checks if a file's modification time is more than 30 days old
+func isFileOlderThan30Days(path string) (bool, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false, err
 	}
 
-	fmt.Printf("[*] %s not found. Downloading the latest release from GitHub...\n", exeName)
+	modTime := info.ModTime()
+	thirtyDaysAgo := time.Now().AddDate(0, 0, -30)
+
+	return modTime.Before(thirtyDaysAgo), nil
+}
+
+// promptForUpdate asks the user if they want to update yt-dlp.exe
+// Returns true if user wants to update (default is yes)
+func promptForUpdate() bool {
+	fmt.Print("[*] A newer version of yt-dlp may be available. Would you like to download it? (Y/n, default is 'Y'): ")
+
+	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Scan()
+	input := strings.TrimSpace(strings.ToLower(scanner.Text()))
+
+	// Default to yes if input is empty or explicitly yes
+	if input == "" || input == "y" || input == "yes" {
+		return true
+	}
+
+	return false
+}
+
+// backupYtdlp backs up the current yt-dlp.exe to yt-dlp.exe.old
+// Deletes existing .old file if it exists
+func backupYtdlp(exeName string) error {
+	oldFileName := exeName + ".old"
+
+	// Delete existing .old file if it exists
+	if _, err := os.Stat(oldFileName); err == nil {
+		fmt.Printf("[*] Removing old backup file: %s\n", oldFileName)
+		if err := os.Remove(oldFileName); err != nil {
+			return fmt.Errorf("failed to delete existing %s: %v", oldFileName, err)
+		}
+	}
+
+	// Rename current exe to .old
+	fmt.Printf("[*] Backing up current %s to %s\n", exeName, oldFileName)
+	if err := os.Rename(exeName, oldFileName); err != nil {
+		return fmt.Errorf("failed to rename %s to %s: %v", exeName, oldFileName, err)
+	}
+
+	return nil
+}
+
+// downloadLatestYtdlp downloads the latest version of yt-dlp from GitHub
+func downloadLatestYtdlp(client *http.Client, exeName string) error {
+	fmt.Printf("[*] Downloading the latest release from GitHub...\n")
 
 	// 1. Retrieve the latest release info from GitHub
 	releaseURL := "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest"
 	resp, err := client.Get(releaseURL)
 	if err != nil {
-		return fmt.Errorf("[!!!] failed to fetch the latest release info: %v", err)
+		return fmt.Errorf("failed to fetch the latest release info: %v", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -202,7 +244,7 @@ func getOrDownloadYtdlp(client *http.Client, exeName string) error {
 		} `json:"assets"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
-		return fmt.Errorf("[!!!] failed to parse GitHub API release JSON: %v", err)
+		return fmt.Errorf("failed to parse GitHub API release JSON: %v", err)
 	}
 
 	// 2. Find the asset with name "yt-dlp.exe"
@@ -214,7 +256,7 @@ func getOrDownloadYtdlp(client *http.Client, exeName string) error {
 		}
 	}
 	if downloadURL == "" {
-		return fmt.Errorf("[!!!] could not find %s in the latest release assets", exeName)
+		return fmt.Errorf("could not find %s in the latest release assets", exeName)
 	}
 
 	fmt.Printf("[*] Downloading %s...\n", downloadURL)
@@ -222,23 +264,73 @@ func getOrDownloadYtdlp(client *http.Client, exeName string) error {
 	// 3. Download the file
 	out, err := os.Create(exeName)
 	if err != nil {
-		return fmt.Errorf("[!!!] error creating %s: %v", exeName, err)
+		return fmt.Errorf("error creating %s: %v", exeName, err)
 	}
 	defer func() { _ = out.Close() }()
 
 	downloadResp, err := client.Get(downloadURL)
 	if err != nil {
-		return fmt.Errorf("[!!!] failed to download %s: %v", exeName, err)
+		return fmt.Errorf("failed to download %s: %v", exeName, err)
 	}
 	defer func() { _ = downloadResp.Body.Close() }()
 
 	// 4. Copy the response body to the file
 	if _, err := io.Copy(out, downloadResp.Body); err != nil {
-		return fmt.Errorf("[!!!] failed to write %s to disk: %v", exeName, err)
+		return fmt.Errorf("failed to write %s to disk: %v", exeName, err)
 	}
 
 	fmt.Println("[*] Successfully downloaded yt-dlp")
 	return nil
+}
+
+// getOrDownloadYtdlp checks if yt-dlp.exe is present in the current directory.
+// If not, it downloads the latest version from GitHub.
+// If it exists but is older than 30 days, prompts user to update.
+// Accepts an *http.Client so we can mock the download in tests.
+func getOrDownloadYtdlp(client *http.Client, exeName string) error {
+	// Check if the file already exists
+	if _, err := os.Stat(exeName); err == nil {
+		// File exists - check if it's older than 30 days
+		isOld, err := isFileOlderThan30Days(exeName)
+		if err != nil {
+			fmt.Printf("[!] Warning: Could not check file age: %v\n", err)
+			fmt.Printf("[*] Found %s in the current directory. Continuing with existing version.\n", exeName)
+			return nil
+		}
+
+		if isOld {
+			// Prompt user for update
+			if promptForUpdate() {
+				// User wants to update - backup current version
+				if err := backupYtdlp(exeName); err != nil {
+					return fmt.Errorf("backup failed: %v", err)
+				}
+
+				// Download new version
+				if err := downloadLatestYtdlp(client, exeName); err != nil {
+					// Download failed - try to restore backup
+					fmt.Printf("[!] Download failed: %v\n", err)
+					fmt.Printf("[*] Attempting to restore backup...\n")
+					if restoreErr := os.Rename(exeName+".old", exeName); restoreErr != nil {
+						return fmt.Errorf("download failed and could not restore backup: %v (restore error: %v)", err, restoreErr)
+					}
+					fmt.Printf("[*] Backup restored. Continuing with existing version.\n")
+					return nil
+				}
+			} else {
+				fmt.Printf("[*] Continuing with existing %s.\n", exeName)
+			}
+		} else {
+			fmt.Printf("[*] Found %s in the current directory. Skipping download.\n", exeName)
+		}
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("error checking for existing %s: %v", exeName, err)
+	}
+
+	// File doesn't exist - download it
+	fmt.Printf("[*] %s not found. Downloading the latest release from GitHub...\n", exeName)
+	return downloadLatestYtdlp(client, exeName)
 }
 
 // parseFavoriteVideosFromFile reads the given JSON file and returns the list of video entries.
