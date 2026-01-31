@@ -3213,3 +3213,112 @@ func TestGetOrDownloadYtdlpWithAgeCheck(t *testing.T) {
 		// because it requires stdin interaction. Manual testing required.
 	})
 }
+
+// TestParseProgressLine tests the progress line parser
+func TestParseProgressLine(t *testing.T) {
+	tests := []struct {
+		name        string
+		line        string
+		wantCurrent int
+		wantTotal   int
+		wantIsProgress bool
+		wantError   bool
+	}{
+		{
+			name:        "valid progress line",
+			line:        "[download] Downloading item 5 of 127",
+			wantCurrent: 5,
+			wantTotal:   127,
+			wantIsProgress: true,
+			wantError:   false,
+		},
+		{
+			name:        "valid progress line with different numbers",
+			line:        "[download] Downloading item 100 of 1000",
+			wantCurrent: 100,
+			wantTotal:   1000,
+			wantIsProgress: true,
+			wantError:   false,
+		},
+		{
+			name:        "not a progress line",
+			line:        "[download] 100% of 38.78MiB in 00:45",
+			wantCurrent: 0,
+			wantTotal:   0,
+			wantIsProgress: false,
+			wantError:   false,
+		},
+		{
+			name:        "error line",
+			line:        "ERROR: [TikTok] 123456: Your IP address is blocked",
+			wantCurrent: 0,
+			wantTotal:   0,
+			wantIsProgress: false,
+			wantError:   false,
+		},
+		{
+			name:        "empty line",
+			line:        "",
+			wantCurrent: 0,
+			wantTotal:   0,
+			wantIsProgress: false,
+			wantError:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			current, total, isProgress, err := parseProgressLine(tt.line)
+			
+			if (err != nil) != tt.wantError {
+				t.Errorf("parseProgressLine() error = %v, wantError %v", err, tt.wantError)
+				return
+			}
+			
+			if current != tt.wantCurrent {
+				t.Errorf("parseProgressLine() current = %v, want %v", current, tt.wantCurrent)
+			}
+			
+			if total != tt.wantTotal {
+				t.Errorf("parseProgressLine() total = %v, want %v", total, tt.wantTotal)
+			}
+			
+			if isProgress != tt.wantIsProgress {
+				t.Errorf("parseProgressLine() isProgress = %v, want %v", isProgress, tt.wantIsProgress)
+			}
+		})
+	}
+}
+
+// TestProgressRenderer tests the progress bar rendering
+func TestProgressRenderer(t *testing.T) {
+	t.Run("disabled renderer doesn't render", func(t *testing.T) {
+		renderer := &ProgressRenderer{enabled: false}
+		state := &ProgressState{
+			CollectionName: "test",
+			CurrentIndex:   50,
+			TotalVideos:    100,
+			SuccessCount:   45,
+			FailureCount:   5,
+		}
+		
+		// Should not panic when disabled
+		renderer.renderProgress(state)
+		renderer.clearProgress()
+	})
+	
+	t.Run("enabled renderer formats correctly", func(t *testing.T) {
+		renderer := &ProgressRenderer{enabled: true}
+		state := &ProgressState{
+			CollectionName: "favorites",
+			CurrentIndex:   50,
+			TotalVideos:    100,
+			SuccessCount:   45,
+			FailureCount:   5,
+		}
+		
+		// Should not panic when enabled
+		renderer.renderProgress(state)
+		renderer.clearProgress()
+	})
+}
