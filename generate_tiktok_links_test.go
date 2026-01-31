@@ -3379,6 +3379,60 @@ func TestIsVerboseLine(t *testing.T) {
 	}
 }
 
+// TestIsErrorLine tests the error line detection function
+func TestIsErrorLine(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+		want bool
+	}{
+		{
+			name: "IP blocked error",
+			line: "ERROR: [TikTok] 7576483608999775502: Your IP address is blocked from accessing this post",
+			want: true,
+		},
+		{
+			name: "authentication required error",
+			line: "ERROR: [TikTok] 123456: This post may not be comfortable for some audiences. Log in for access",
+			want: true,
+		},
+		{
+			name: "not available error",
+			line: "ERROR: [TikTok] 789012: Video not available",
+			want: true,
+		},
+		{
+			name: "progress line",
+			line: "[download] Downloading item 5 of 127",
+			want: false,
+		},
+		{
+			name: "skip line",
+			line: "[download] video.mp4 has already been downloaded",
+			want: false,
+		},
+		{
+			name: "other output",
+			line: "[TikTok] Extracting URL: https://www.tiktok.com/@user/video/123456",
+			want: false,
+		},
+		{
+			name: "empty line",
+			line: "",
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isErrorLine(tt.line)
+			if got != tt.want {
+				t.Errorf("isErrorLine() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 // TestProgressRenderer tests the progress bar rendering
 func TestProgressRenderer(t *testing.T) {
 	t.Run("disabled renderer doesn't render", func(t *testing.T) {

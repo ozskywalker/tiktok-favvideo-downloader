@@ -577,6 +577,15 @@ func (r *RealCommandRunner) Run(name string, args ...string) (CapturedOutput, er
 					continue // Don't print skip lines when using progress bar
 				}
 
+				// Check for error line (failed downloads)
+				if isErrorLine(line) {
+					// Increment failure count for errors
+					r.ProgressState.FailureCount++
+					// Render progress bar to update failure count
+					r.ProgressRenderer.renderProgress(r.ProgressState)
+					// Don't continue here - let the error be printed below
+				}
+
 				// Check for verbose line when progress bar is enabled
 				if r.ProgressRenderer.enabled && isVerboseLine(line) {
 					continue // Don't print verbose lines when using progress bar
@@ -754,6 +763,13 @@ func isVerboseLine(line string) bool {
 		}
 	}
 	return false
+}
+
+// isErrorLine detects when yt-dlp encounters an error during download
+// yt-dlp outputs errors like: "ERROR: [TikTok] VIDEO_ID: error message"
+// Returns: true if this is an error message
+func isErrorLine(line string) bool {
+	return strings.Contains(line, "ERROR: [TikTok]")
 }
 
 // supportsANSI checks if the terminal supports ANSI escape codes
