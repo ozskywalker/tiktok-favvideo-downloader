@@ -169,6 +169,8 @@ type Config struct {
 	IndexOnly            bool
 	JSONFile             string
 	OutputName           string
+	CookieFile           string // Path to Netscape cookies.txt file
+	CookieFromBrowser    string // Browser name (chrome, firefox, edge, safari, etc.)
 }
 
 // getOrDownloadYtdlp checks if yt-dlp.exe is present in the current directory.
@@ -630,8 +632,11 @@ func writeTroubleshootingTips(w *bufio.Writer, session *DownloadSession) {
 
 	if count := errorCounts[ErrorAuthRequired]; count > 0 {
 		_, _ = fmt.Fprintf(w, "Authentication Required (%d videos):\n", count)
-		_, _ = fmt.Fprintf(w, "  - These videos require login to view\n")
-		_, _ = fmt.Fprintf(w, "  - You may need to download manually while logged in\n\n")
+		_, _ = fmt.Fprintf(w, "  - These videos require login to view (age-restricted content)\n")
+		_, _ = fmt.Fprintf(w, "  - Retry with cookies to download these videos:\n")
+		_, _ = fmt.Fprintf(w, "    * Use --cookies cookies.txt (Netscape format)\n")
+		_, _ = fmt.Fprintf(w, "    * OR use --cookies-from-browser chrome\n")
+		_, _ = fmt.Fprintf(w, "  - See: https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp\n\n")
 	}
 
 	if count := errorCounts[ErrorNotAvailable]; count > 0 {
@@ -648,12 +653,12 @@ func writeTroubleshootingTips(w *bufio.Writer, session *DownloadSession) {
 }
 
 // runYtdlp runs the yt-dlp command for the user
-func runYtdlp(psPrefix, outputName string, organizeByCollection, skipThumbnails bool, entries []VideoEntry) (*CollectionResult, error) {
-	return runYtdlpWithRunner(&RealCommandRunner{}, psPrefix, outputName, organizeByCollection, skipThumbnails, entries)
+func runYtdlp(psPrefix, outputName string, organizeByCollection, skipThumbnails bool, cookieFile, cookieFromBrowser string, entries []VideoEntry) (*CollectionResult, error) {
+	return runYtdlpWithRunner(&RealCommandRunner{}, psPrefix, outputName, organizeByCollection, skipThumbnails, cookieFile, cookieFromBrowser, entries)
 }
 
 // runYtdlpWithRunner allows dependency injection for testing
-func runYtdlpWithRunner(runner CommandRunner, psPrefix, outputName string, organizeByCollection, skipThumbnails bool, entries []VideoEntry) (*CollectionResult, error) {
+func runYtdlpWithRunner(runner CommandRunner, psPrefix, outputName string, organizeByCollection, skipThumbnails bool, cookieFile, cookieFromBrowser string, entries []VideoEntry) (*CollectionResult, error) {
 	fmt.Println("[*] Running yt-dlp now...")
 	cmdStr := fmt.Sprintf("%syt-dlp.exe", psPrefix)
 
@@ -679,6 +684,14 @@ func runYtdlpWithRunner(runner CommandRunner, psPrefix, outputName string, organ
 	// Add thumbnail download unless skipped
 	if !skipThumbnails {
 		args = append(args, "--write-thumbnail")
+	}
+
+	// Add cookie arguments if configured
+	if cookieFile != "" {
+		args = append(args, "--cookies", cookieFile)
+	}
+	if cookieFromBrowser != "" {
+		args = append(args, "--cookies-from-browser", cookieFromBrowser)
 	}
 
 	// Execute and capture output
@@ -914,11 +927,128 @@ func getEntriesForCollection(entries []VideoEntry, collection string) []VideoEnt
 func getExeName() string {
 	exePath, err := os.Executable()
 	if err != nil {
-		// If we can’t get the path, default to a known name
+		// If we can't get the path, default to a known name
 		return "tiktok-favvideo-downloader.exe"
 	}
 	// Otherwise, return the filename (base) part of the path
 	return filepath.Base(exePath)
+}
+
+// validateCookieFile checks if a cookie file exists and is readable
+func validateCookieFile(path string) error {
+	if path == "" {
+		return fmt.Errorf("cookie file path is empty")
+	}
+
+	// Check if file exists
+	stat, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("cookie file not found: %s", path)
+		}
+		return fmt.Errorf("error accessing cookie file: %v", err)
+	}
+
+	// Check it's not a directory
+	if stat.IsDir() {
+		return fmt.Errorf("path is a directory, not a file: %s", path)
+	}
+
+	// Check if file is readable
+	file, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("cannot read cookie file: %v", err)
+	}
+	defer func() { _ = file.Close() }()
+
+	// Optional: Check if file looks like Netscape cookie format
+	scanner := bufio.NewScanner(file)
+	if scanner.Scan() {
+		firstLine := scanner.Text()
+		if !strings.Contains(firstLine, "Netscape HTTP Cookie File") {
+			fmt.Println("[!] Warning: File doesn't appear to be in Netscape cookie format")
+			fmt.Println("    yt-dlp expects cookies in Netscape format")
+		}
+	}
+
+	return nil
+}
+
+// validateBrowserName checks if a browser name is valid for cookie extraction
+func validateBrowserName(browser string) error {
+	if browser == "" {
+		return fmt.Errorf("browser name is empty")
+	}
+
+	validBrowsers := []string{
+		"chrome", "firefox", "edge", "safari", "opera",
+		"brave", "chromium", "vivaldi",
+	}
+
+	browserLower := strings.ToLower(strings.TrimSpace(browser))
+
+	for _, valid := range validBrowsers {
+		if browserLower == valid {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("unsupported browser: %s\nValid options: %s",
+		browser, strings.Join(validBrowsers, ", "))
+}
+
+// promptForCookies interactively asks the user if they want to provide cookies
+func promptForCookies(config *Config) error {
+	fmt.Print("\n[*] Some videos require authentication to download (age-restricted content).\n")
+	fmt.Print("    Would you like to provide cookies for authentication? (y/n, default is 'n'): ")
+
+	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Scan()
+	input := strings.TrimSpace(strings.ToLower(scanner.Text()))
+
+	if input != "y" && input != "yes" {
+		return nil // User declined
+	}
+
+	// Ask for method
+	fmt.Println("\n[*] Choose cookie method:")
+	fmt.Println("    1) Use cookies.txt file (Netscape format)")
+	fmt.Println("    2) Extract from browser (Chrome, Firefox, Edge, etc.)")
+	fmt.Print("    Enter choice (1 or 2): ")
+
+	scanner.Scan()
+	choice := strings.TrimSpace(scanner.Text())
+
+	switch choice {
+	case "1":
+		fmt.Print("[*] Enter path to cookies.txt file: ")
+		scanner.Scan()
+		cookiePath := strings.TrimSpace(scanner.Text())
+
+		if err := validateCookieFile(cookiePath); err != nil {
+			return fmt.Errorf("cookie file validation failed: %w", err)
+		}
+
+		config.CookieFile = cookiePath
+		fmt.Println("[*] Using cookies from file:", cookiePath)
+
+	case "2":
+		fmt.Print("[*] Enter browser name (chrome, firefox, edge, safari, etc.): ")
+		scanner.Scan()
+		browser := strings.TrimSpace(scanner.Text())
+
+		if err := validateBrowserName(browser); err != nil {
+			return err
+		}
+
+		config.CookieFromBrowser = strings.ToLower(browser)
+		fmt.Printf("[*] Will extract cookies from %s browser\n", browser)
+
+	default:
+		return fmt.Errorf("invalid choice: %s (expected 1 or 2)", choice)
+	}
+
+	return nil
 }
 
 // parseFlags parses command line flags and returns configuration
@@ -931,6 +1061,8 @@ func parseFlags() *Config {
 	flatStructure := flag.Bool("flat-structure", false, "Disable collection organization (use flat directory structure)")
 	noThumbnails := flag.Bool("no-thumbnails", false, "Skip thumbnail download (faster, less storage)")
 	indexOnly := flag.Bool("index-only", false, "Regenerate indexes from existing .info.json files without downloading")
+	cookies := flag.String("cookies", "", "Path to Netscape cookies.txt file for authentication")
+	cookiesFromBrowser := flag.String("cookies-from-browser", "", "Extract cookies from browser (chrome, firefox, edge, safari, etc.)")
 	help := flag.Bool("help", false, "Show help message")
 	h := flag.Bool("h", false, "Show help message")
 
@@ -941,9 +1073,33 @@ func parseFlags() *Config {
 		os.Exit(0)
 	}
 
+	// Check mutual exclusivity of cookie flags
+	if *cookies != "" && *cookiesFromBrowser != "" {
+		fmt.Println("[!!!] Error: Cannot use both --cookies and --cookies-from-browser")
+		os.Exit(1)
+	}
+
 	config.OrganizeByCollection = !*flatStructure
 	config.SkipThumbnails = *noThumbnails
 	config.IndexOnly = *indexOnly
+	config.CookieFile = *cookies
+	config.CookieFromBrowser = *cookiesFromBrowser
+
+	// Validate cookie file if provided
+	if config.CookieFile != "" {
+		if err := validateCookieFile(config.CookieFile); err != nil {
+			fmt.Printf("[!!!] Cookie file validation failed: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
+	// Validate browser name if provided
+	if config.CookieFromBrowser != "" {
+		if err := validateBrowserName(config.CookieFromBrowser); err != nil {
+			fmt.Printf("[!!!] %v\n", err)
+			os.Exit(1)
+		}
+	}
 
 	// Handle positional argument for JSON file
 	args := flag.Args()
@@ -963,10 +1119,12 @@ func printUsage() {
 	fmt.Println("\nUsage:")
 	fmt.Printf("  %s [flags] [optional path to user_data_tiktok.json]\n", exeName)
 	fmt.Println("\nFlags:")
-	fmt.Println("  --flat-structure     Disable collection organization (use flat directory structure)")
-	fmt.Println("  --no-thumbnails      Skip thumbnail download (faster, less storage)")
-	fmt.Println("  --index-only         Regenerate indexes from existing .info.json files")
-	fmt.Println("  --help, -h           Show this help message")
+	fmt.Println("  --flat-structure           Disable collection organization (use flat directory structure)")
+	fmt.Println("  --no-thumbnails            Skip thumbnail download (faster, less storage)")
+	fmt.Println("  --index-only               Regenerate indexes from existing .info.json files")
+	fmt.Println("  --cookies <FILE>           Path to Netscape cookies.txt file for authentication")
+	fmt.Println("  --cookies-from-browser <NAME>  Extract cookies from browser (chrome, firefox, edge, etc.)")
+	fmt.Println("  --help, -h                 Show this help message")
 	fmt.Println("\nExamples:")
 	fmt.Println("  1) Double-click (no arguments) if 'user_data_tiktok.json' is in the same folder.")
 	fmt.Printf("  2) Or drag & drop a JSON file onto '%s' to specify a different JSON file.\n", exeName)
@@ -974,6 +1132,8 @@ func printUsage() {
 	fmt.Printf("  4) Use flat structure: %s --flat-structure\n", exeName)
 	fmt.Printf("  5) Skip thumbnails: %s --no-thumbnails\n", exeName)
 	fmt.Printf("  6) Regenerate index only: %s --index-only\n", exeName)
+	fmt.Printf("  7) Use cookies from file: %s --cookies cookies.txt\n", exeName)
+	fmt.Printf("  8) Extract cookies from Chrome: %s --cookies-from-browser chrome\n", exeName)
 	fmt.Println("\nCollection Organization (Default):")
 	fmt.Println("  Videos are organized into subdirectories by collection type:")
 	fmt.Println("    favorites/    - Your favorited videos")
@@ -1068,6 +1228,15 @@ func main() {
 		config.IncludeLiked = true
 	}
 
+	// Prompt for cookies if not provided via flags
+	if config.CookieFile == "" && config.CookieFromBrowser == "" {
+		if err := promptForCookies(config); err != nil {
+			fmt.Printf("[!!!] Cookie setup failed: %v\n", err)
+			fmt.Println("[*] Continuing without cookies...")
+			// Don't exit - continue with download attempt
+		}
+	}
+
 	// Extract video entries
 	videoEntries, err := parseFavoriteVideosFromFile(config.JSONFile, config.IncludeLiked)
 	if err != nil {
@@ -1128,7 +1297,7 @@ func main() {
 				collectionEntries := getEntriesForCollection(videoEntries, collection)
 
 				fmt.Printf("[*] Processing collection: %s\n", collection)
-				result, _ := runYtdlp(psPrefix, collectionOutputName, config.OrganizeByCollection, config.SkipThumbnails, collectionEntries)
+				result, _ := runYtdlp(psPrefix, collectionOutputName, config.OrganizeByCollection, config.SkipThumbnails, config.CookieFile, config.CookieFromBrowser, collectionEntries)
 
 				// Track session results
 				if result != nil {
@@ -1148,7 +1317,7 @@ func main() {
 			}
 		} else {
 			// Flat structure
-			result, _ := runYtdlp(psPrefix, config.OutputName, config.OrganizeByCollection, config.SkipThumbnails, videoEntries)
+			result, _ := runYtdlp(psPrefix, config.OutputName, config.OrganizeByCollection, config.SkipThumbnails, config.CookieFile, config.CookieFromBrowser, videoEntries)
 
 			// Track session results
 			if result != nil {

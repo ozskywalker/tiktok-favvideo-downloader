@@ -299,6 +299,8 @@ func TestRunYtdlpWithRunner(t *testing.T) {
 		outputName           string
 		organizeByCollection bool
 		skipThumbnails       bool
+		cookieFile           string
+		cookieFromBrowser    string
 		shouldFail           bool
 		expectCmd            string
 		expectArgs           []string
@@ -353,6 +355,54 @@ func TestRunYtdlpWithRunner(t *testing.T) {
 			expectCmd:            "yt-dlp.exe",
 			expectArgs:           []string{"-a", "test_videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json"},
 		},
+		{
+			name:                 "with cookie file",
+			psPrefix:             "",
+			outputName:           "test_videos.txt",
+			organizeByCollection: false,
+			skipThumbnails:       false,
+			cookieFile:           "cookies.txt",
+			cookieFromBrowser:    "",
+			shouldFail:           false,
+			expectCmd:            "yt-dlp.exe",
+			expectArgs:           []string{"-a", "test_videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json", "--write-thumbnail", "--cookies", "cookies.txt"},
+		},
+		{
+			name:                 "with cookies from browser",
+			psPrefix:             "",
+			outputName:           "test_videos.txt",
+			organizeByCollection: false,
+			skipThumbnails:       false,
+			cookieFile:           "",
+			cookieFromBrowser:    "chrome",
+			shouldFail:           false,
+			expectCmd:            "yt-dlp.exe",
+			expectArgs:           []string{"-a", "test_videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json", "--write-thumbnail", "--cookies-from-browser", "chrome"},
+		},
+		{
+			name:                 "cookies with skip thumbnails",
+			psPrefix:             "",
+			outputName:           "test_videos.txt",
+			organizeByCollection: false,
+			skipThumbnails:       true,
+			cookieFile:           "cookies.txt",
+			cookieFromBrowser:    "",
+			shouldFail:           false,
+			expectCmd:            "yt-dlp.exe",
+			expectArgs:           []string{"-a", "test_videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json", "--cookies", "cookies.txt"},
+		},
+		{
+			name:                 "cookies with collection organization",
+			psPrefix:             "",
+			outputName:           filepath.Join("favorites", "fav_videos.txt"),
+			organizeByCollection: true,
+			skipThumbnails:       false,
+			cookieFile:           "",
+			cookieFromBrowser:    "firefox",
+			shouldFail:           false,
+			expectCmd:            "yt-dlp.exe",
+			expectArgs:           []string{"-a", filepath.Join("favorites", "fav_videos.txt"), "--output", filepath.Join("favorites", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s"), "--write-info-json", "--write-thumbnail", "--cookies-from-browser", "firefox"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -365,7 +415,7 @@ func TestRunYtdlpWithRunner(t *testing.T) {
 			}
 
 			// Capture output for verification
-			_, _ = runYtdlpWithRunner(mockRunner, tt.psPrefix, tt.outputName, tt.organizeByCollection, tt.skipThumbnails, testEntries)
+			_, _ = runYtdlpWithRunner(mockRunner, tt.psPrefix, tt.outputName, tt.organizeByCollection, tt.skipThumbnails, tt.cookieFile, tt.cookieFromBrowser, testEntries)
 
 			// Verify command was called correctly
 			if len(mockRunner.Commands) != 1 {
@@ -2602,6 +2652,211 @@ func TestSpecialCharactersInIndex(t *testing.T) {
 
 		if !strings.Contains(index.Videos[0].Title, "مرحبا") {
 			t.Error("RTL text should be preserved")
+		}
+	})
+}
+
+func TestValidateCookieFile(t *testing.T) {
+	t.Run("valid_cookie_file", func(t *testing.T) {
+		tmpFile, err := os.CreateTemp("", "cookies_*.txt")
+		if err != nil {
+			t.Fatalf("failed to create temp file: %v", err)
+		}
+		defer func() { _ = os.Remove(tmpFile.Name()) }()
+
+		// Write Netscape cookie format header
+		_, _ = tmpFile.WriteString("# Netscape HTTP Cookie File\n")
+		_, _ = tmpFile.WriteString(".tiktok.com\tTRUE\t/\tFALSE\t0\tsessionid\ttest123\n")
+		_ = tmpFile.Close()
+
+		err = validateCookieFile(tmpFile.Name())
+		if err != nil {
+			t.Errorf("expected nil error for valid cookie file, got: %v", err)
+		}
+	})
+
+	t.Run("non_existent_file", func(t *testing.T) {
+		err := validateCookieFile("nonexistent_cookies.txt")
+		if err == nil {
+			t.Error("expected error for non-existent file")
+		}
+		if !strings.Contains(err.Error(), "not found") {
+			t.Errorf("expected 'not found' error, got: %v", err)
+		}
+	})
+
+	t.Run("directory_path", func(t *testing.T) {
+		tmpDir, err := os.MkdirTemp("", "cookiedir_*")
+		if err != nil {
+			t.Fatalf("failed to create temp dir: %v", err)
+		}
+		defer func() { _ = os.RemoveAll(tmpDir) }()
+
+		err = validateCookieFile(tmpDir)
+		if err == nil {
+			t.Error("expected error for directory path")
+		}
+		if !strings.Contains(err.Error(), "directory") {
+			t.Errorf("expected 'directory' error, got: %v", err)
+		}
+	})
+
+	t.Run("empty_path", func(t *testing.T) {
+		err := validateCookieFile("")
+		if err == nil {
+			t.Error("expected error for empty path")
+		}
+		if !strings.Contains(err.Error(), "empty") {
+			t.Errorf("expected 'empty' error, got: %v", err)
+		}
+	})
+
+	t.Run("invalid_format_warning", func(t *testing.T) {
+		tmpFile, err := os.CreateTemp("", "invalid_cookies_*.txt")
+		if err != nil {
+			t.Fatalf("failed to create temp file: %v", err)
+		}
+		defer func() { _ = os.Remove(tmpFile.Name()) }()
+
+		// Write non-Netscape format
+		_, _ = tmpFile.WriteString("This is not a Netscape cookie file\n")
+		_ = tmpFile.Close()
+
+		// Should succeed but print warning
+		err = validateCookieFile(tmpFile.Name())
+		if err != nil {
+			t.Errorf("expected nil error for readable file, got: %v", err)
+		}
+	})
+}
+
+func TestValidateBrowserName(t *testing.T) {
+	tests := []struct {
+		name        string
+		browser     string
+		shouldError bool
+	}{
+		{"chrome", "chrome", false},
+		{"firefox", "firefox", false},
+		{"edge", "edge", false},
+		{"safari", "safari", false},
+		{"opera", "opera", false},
+		{"brave", "brave", false},
+		{"chromium", "chromium", false},
+		{"vivaldi", "vivaldi", false},
+		{"chrome_uppercase", "CHROME", false},
+		{"chrome_mixed_case", "Chrome", false},
+		{"chrome_with_spaces", "  chrome  ", false},
+		{"invalid_browser", "invalid_browser", true},
+		{"empty_string", "", true},
+		{"internet_explorer", "internet explorer", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateBrowserName(tt.browser)
+			if tt.shouldError {
+				if err == nil {
+					t.Errorf("expected error for browser: %s", tt.browser)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("expected no error for browser: %s, got: %v", tt.browser, err)
+				}
+			}
+		})
+	}
+
+	t.Run("error_message_contains_valid_options", func(t *testing.T) {
+		err := validateBrowserName("invalid")
+		if err == nil {
+			t.Fatal("expected error for invalid browser")
+		}
+		if !strings.Contains(err.Error(), "chrome") || !strings.Contains(err.Error(), "firefox") {
+			t.Errorf("error message should list valid browsers, got: %v", err)
+		}
+	})
+}
+
+func TestParseFlagsCookies(t *testing.T) {
+	// Save original command line args
+	originalArgs := os.Args
+	defer func() { os.Args = originalArgs }()
+
+	t.Run("cookies_file_flag", func(t *testing.T) {
+		// Create temp cookie file
+		tmpFile, err := os.CreateTemp("", "cookies_*.txt")
+		if err != nil {
+			t.Fatalf("failed to create temp file: %v", err)
+		}
+		defer func() { _ = os.Remove(tmpFile.Name()) }()
+		_, _ = tmpFile.WriteString("# Netscape HTTP Cookie File\n")
+		_ = tmpFile.Close()
+
+		os.Args = []string{"program", "--cookies", tmpFile.Name()}
+		flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+
+		config := parseFlags()
+
+		if config.CookieFile != tmpFile.Name() {
+			t.Errorf("expected CookieFile %q, got %q", tmpFile.Name(), config.CookieFile)
+		}
+		if config.CookieFromBrowser != "" {
+			t.Errorf("expected CookieFromBrowser to be empty, got %q", config.CookieFromBrowser)
+		}
+	})
+
+	t.Run("cookies_from_browser_flag", func(t *testing.T) {
+		os.Args = []string{"program", "--cookies-from-browser", "chrome"}
+		flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+
+		config := parseFlags()
+
+		if config.CookieFromBrowser != "chrome" {
+			t.Errorf("expected CookieFromBrowser 'chrome', got %q", config.CookieFromBrowser)
+		}
+		if config.CookieFile != "" {
+			t.Errorf("expected CookieFile to be empty, got %q", config.CookieFile)
+		}
+	})
+
+	t.Run("no_cookie_flags", func(t *testing.T) {
+		os.Args = []string{"program"}
+		flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+
+		config := parseFlags()
+
+		if config.CookieFile != "" {
+			t.Errorf("expected CookieFile to be empty, got %q", config.CookieFile)
+		}
+		if config.CookieFromBrowser != "" {
+			t.Errorf("expected CookieFromBrowser to be empty, got %q", config.CookieFromBrowser)
+		}
+	})
+
+	t.Run("cookies_combined_with_other_flags", func(t *testing.T) {
+		// Create temp cookie file
+		tmpFile, err := os.CreateTemp("", "cookies_*.txt")
+		if err != nil {
+			t.Fatalf("failed to create temp file: %v", err)
+		}
+		defer func() { _ = os.Remove(tmpFile.Name()) }()
+		_, _ = tmpFile.WriteString("# Netscape HTTP Cookie File\n")
+		_ = tmpFile.Close()
+
+		os.Args = []string{"program", "--flat-structure", "--no-thumbnails", "--cookies", tmpFile.Name()}
+		flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+
+		config := parseFlags()
+
+		if config.CookieFile != tmpFile.Name() {
+			t.Errorf("expected CookieFile %q, got %q", tmpFile.Name(), config.CookieFile)
+		}
+		if !config.SkipThumbnails {
+			t.Error("expected SkipThumbnails to be true")
+		}
+		if config.OrganizeByCollection {
+			t.Error("expected OrganizeByCollection to be false")
 		}
 	})
 }

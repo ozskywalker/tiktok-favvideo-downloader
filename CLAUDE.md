@@ -28,6 +28,15 @@ tiktok-favvideo-downloader.exe --no-thumbnails
 
 # Regenerate indexes without re-downloading videos
 tiktok-favvideo-downloader.exe --index-only
+
+# Use cookies from file for age-restricted videos
+tiktok-favvideo-downloader.exe --cookies cookies.txt
+
+# Extract cookies from Chrome browser
+tiktok-favvideo-downloader.exe --cookies-from-browser chrome
+
+# Combine with other flags
+tiktok-favvideo-downloader.exe --cookies-from-browser firefox --no-thumbnails
 ```
 
 ### Collection Directory Structure
@@ -249,6 +258,7 @@ This is a single-package Go application (`package main`) that downloads TikTok f
    - `getOrDownloadYtdlp()` automatically downloads latest yt-dlp.exe from GitHub if not present
    - `runYtdlp()` executes yt-dlp with `--write-info-json` and optional `--write-thumbnail` flags
    - Supports `--no-thumbnails` flag to skip thumbnail downloads
+   - Supports `--cookies` and `--cookies-from-browser` flags for age-restricted videos
    - New filename format includes video ID and truncated title
 
 4. **Video Metadata & Indexing**: Generates browsable indexes after download
@@ -271,10 +281,11 @@ This is a single-package Go application (`package main`) that downloads TikTok f
    - Uses `io.MultiWriter` to capture output while still displaying real-time progress
 
 6. **CLI Flag Parsing**: Command-line argument handling
-   - `parseFlags()` handles `--flat-structure`, `--no-thumbnails`, `--index-only`, `--help` flags
+   - `parseFlags()` handles `--flat-structure`, `--no-thumbnails`, `--index-only`, `--cookies`, `--cookies-from-browser`, `--help` flags
    - `Config` struct stores application configuration
    - Supports positional arguments for custom JSON file paths
    - `--index-only` mode regenerates indexes from existing .info.json files without downloading
+   - Cookie validation functions: `validateCookieFile()`, `validateBrowserName()`, `promptForCookies()`
 
 6. **Cross-platform Command Execution**: Handles PowerShell vs Command Prompt differences
    - `isRunningInPowershell()` detects PowerShell environment
