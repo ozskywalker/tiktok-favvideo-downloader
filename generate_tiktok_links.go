@@ -727,8 +727,9 @@ func writeTroubleshootingTips(w *bufio.Writer, session *DownloadSession) {
 		_, _ = fmt.Fprintf(w, "  - These videos require login to view (age-restricted content)\n")
 		_, _ = fmt.Fprintf(w, "  - Retry with cookies to download these videos:\n")
 		_, _ = fmt.Fprintf(w, "    * Use --cookies cookies.txt (Netscape format)\n")
-		_, _ = fmt.Fprintf(w, "    * OR use --cookies-from-browser chrome\n")
-		_, _ = fmt.Fprintf(w, "  - See: https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp\n\n")
+		_, _ = fmt.Fprintf(w, "    * OR use --cookies-from-browser firefox\n")
+		_, _ = fmt.Fprintf(w, "  - See: https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp\n")
+		_, _ = fmt.Fprintf(w, "    NB: cookies-from-browser may not work with Chromium-based browsers, refer to yt-dlp issue 7271 https://github.com/yt-dlp/yt-dlp/issues/7271\n\n")
 	}
 
 	if count := errorCounts[ErrorNotAvailable]; count > 0 {
