@@ -40,7 +40,47 @@ tiktok-favvideo-downloader.exe --cookies-from-browser firefox --no-thumbnails
 
 # Disable resume functionality (force re-download all videos)
 tiktok-favvideo-downloader.exe --disable-resume
+
+# Disable progress bar (use traditional line-by-line output)
+tiktok-favvideo-downloader.exe --no-progress-bar
 ```
+
+### Real-Time Progress Bar (New!)
+
+**By default, the application displays a live progress bar during downloads showing:**
+- Current progress: "Downloading favorites (87/92)"
+- Visual progress bar: "████████████░░░ 94.6%"
+- Success and failure counts in real-time
+- Colored output (green for success, red for failures)
+
+**Example output:**
+```
+Downloading favorites (87/92) | ████████████░░░ 94.6% | Success: 85 | Failed: 2
+```
+
+**How It Works:**
+- Automatically enabled when terminal supports ANSI escape codes
+- Parses yt-dlp's "[download] Downloading item X of Y" progress messages
+- Updates progress bar in real-time without cluttering output
+- Non-progress messages (errors, warnings) are still displayed
+- Progress bar auto-clears when download completes
+
+**Disabling the Progress Bar:**
+Use `--no-progress-bar` flag to revert to traditional line-by-line output:
+```bash
+tiktok-favvideo-downloader.exe --no-progress-bar
+```
+
+This is useful for:
+- Piped output or redirected logs
+- Terminals that don't support ANSI codes
+- Debugging or viewing full yt-dlp output
+- Running in background or automated scripts
+
+**Terminal Compatibility:**
+- Automatically detects ANSI support (Windows Terminal, ConEmu, modern terminals)
+- Auto-disables on: piped output, old Command Prompt, non-terminal environments
+- No configuration needed - works out of the box on supported terminals
 
 ### Resume Download Functionality
 
@@ -305,9 +345,20 @@ This is a single-package Go application (`package main`) that downloads TikTok f
    - Supports `--no-thumbnails` flag to skip thumbnail downloads
    - Supports `--cookies` and `--cookies-from-browser` flags for age-restricted videos
    - Supports `--disable-resume` flag to force re-download all videos
+   - Supports `--no-progress-bar` flag to disable real-time progress display
    - New filename format includes video ID and truncated title
 
-4. **Video Metadata & Indexing**: Generates browsable indexes after download
+4. **Real-Time Progress Bar**: Live download progress visualization
+   - `ProgressState` struct tracks current download progress (current index, total, success/failure counts)
+   - `ProgressRenderer` struct handles ANSI-based progress display with color codes
+   - `parseProgressLine()` extracts progress from yt-dlp's "[download] Downloading item X of Y" messages
+   - `supportsANSI()` detects terminal ANSI support (Windows Terminal, ConEmu, standard terminals)
+   - `renderProgress()` displays live progress bar using ANSI escape codes (\r for line rewrite, color codes)
+   - `RealCommandRunner` performs line-by-line output processing via `bufio.Scanner`
+   - Auto-disables on piped output or terminals without ANSI support
+   - Progress bar updates in real-time without cluttering output with repeated messages
+
+5. **Video Metadata & Indexing**: Generates browsable indexes after download
    - `YtdlpInfo` struct for parsing yt-dlp's .info.json files
    - `CollectionIndex` struct for the complete collection metadata
    - `extractVideoID()` parses video IDs from TikTok URLs
@@ -316,7 +367,7 @@ This is a single-package Go application (`package main`) that downloads TikTok f
    - `getEntriesForCollection()` filters entries by collection name
    - HTML template with search, filter, and embedded video player
 
-5. **Download Session Reporting**: Tracks and reports download results
+6. **Download Session Reporting**: Tracks and reports download results
    - `CapturedOutput` struct stores yt-dlp stdout/stderr for parsing
    - `DownloadSession` and `CollectionResult` structs track session statistics
    - `FailureDetail` struct captures per-video error information
@@ -326,15 +377,16 @@ This is a single-package Go application (`package main`) that downloads TikTok f
    - `writeResultsFile()` appends detailed results to results.txt with troubleshooting tips
    - Uses `io.MultiWriter` to capture output while still displaying real-time progress
 
-6. **CLI Flag Parsing**: Command-line argument handling
-   - `parseFlags()` handles `--flat-structure`, `--no-thumbnails`, `--index-only`, `--disable-resume`, `--cookies`, `--cookies-from-browser`, `--help` flags
+7. **CLI Flag Parsing**: Command-line argument handling
+   - `parseFlags()` handles `--flat-structure`, `--no-thumbnails`, `--index-only`, `--disable-resume`, `--no-progress-bar`, `--cookies`, `--cookies-from-browser`, `--help` flags
    - `Config` struct stores application configuration
    - Supports positional arguments for custom JSON file paths
    - `--index-only` mode regenerates indexes from existing .info.json files without downloading
    - `--disable-resume` mode forces re-download of all videos (ignores download archive)
+   - `--no-progress-bar` mode disables real-time progress bar (traditional line-by-line output)
    - Cookie validation functions: `validateCookieFile()`, `validateBrowserName()`, `promptForCookies()`
 
-6. **Cross-platform Command Execution**: Handles PowerShell vs Command Prompt differences
+8. **Cross-platform Command Execution**: Handles PowerShell vs Command Prompt differences
    - `isRunningInPowershell()` detects PowerShell environment
    - Adjusts command prefixes accordingly (`.\` for PowerShell)
 

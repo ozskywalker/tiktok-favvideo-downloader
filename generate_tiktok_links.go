@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -161,6 +162,21 @@ type Data struct {
 	} `json:"Likes and Favorites"`
 }
 
+// ProgressState tracks real-time download progress for display
+type ProgressState struct {
+	CollectionName string
+	CurrentIndex   int
+	TotalVideos    int
+	SuccessCount   int
+	FailureCount   int
+}
+
+// ProgressRenderer handles ANSI-based progress display
+type ProgressRenderer struct {
+	enabled     bool // false if terminal doesn't support ANSI or user disabled it
+	lastLineLen int  // track last line length for proper clearing
+}
+
 // Config holds the application configuration
 type Config struct {
 	OrganizeByCollection bool
@@ -168,6 +184,7 @@ type Config struct {
 	SkipThumbnails       bool
 	IndexOnly            bool
 	DisableResume        bool   // Disable resume functionality (force re-download all videos)
+	DisableProgressBar   bool   // Disable progress bar (use traditional line-by-line output)
 	JSONFile             string
 	OutputName           string
 	CookieFile           string // Path to Netscape cookies.txt file
@@ -503,18 +520,101 @@ type CommandRunner interface {
 }
 
 // RealCommandRunner implements CommandRunner using exec.Command
-type RealCommandRunner struct{}
+type RealCommandRunner struct {
+	ProgressRenderer *ProgressRenderer // Optional: if set, renders progress bar
+	ProgressState    *ProgressState    // Optional: if set, tracks progress
+}
 
 func (r *RealCommandRunner) Run(name string, args ...string) (CapturedOutput, error) {
 	cmd := exec.Command(name, args...)
 
 	var stdoutBuf, stderrBuf bytes.Buffer
 
-	// Use MultiWriter to both capture AND display output
-	cmd.Stdout = io.MultiWriter(os.Stdout, &stdoutBuf)
-	cmd.Stderr = io.MultiWriter(os.Stderr, &stderrBuf)
+	// Get stdout and stderr pipes for line-by-line reading
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return CapturedOutput{}, err
+	}
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		return CapturedOutput{}, err
+	}
 
-	err := cmd.Run()
+	// Start the command
+	if err := cmd.Start(); err != nil {
+		return CapturedOutput{}, err
+	}
+
+	// Process stdout and stderr line-by-line in goroutines
+	done := make(chan bool, 2)
+
+	// Process stdout
+	go func() {
+		scanner := bufio.NewScanner(stdoutPipe)
+		for scanner.Scan() {
+			line := scanner.Text()
+			stdoutBuf.WriteString(line + "\n") // Capture line
+
+			// Check for progress line if progress rendering is enabled
+			if r.ProgressRenderer != nil && r.ProgressState != nil {
+				current, total, isProgress, err := parseProgressLine(line)
+				if err == nil && isProgress {
+					// Update progress state
+					r.ProgressState.CurrentIndex = current
+					r.ProgressState.TotalVideos = total
+					// Render progress bar
+					r.ProgressRenderer.renderProgress(r.ProgressState)
+					continue // Don't print progress lines when using progress bar
+				}
+
+				// Check for skip line (already downloaded videos)
+				if isSkipLine(line) {
+					// Increment progress for skipped videos
+					r.ProgressState.CurrentIndex++
+					r.ProgressState.SuccessCount++
+					// Render progress bar
+					r.ProgressRenderer.renderProgress(r.ProgressState)
+					continue // Don't print skip lines when using progress bar
+				}
+			}
+
+			// For non-progress lines or when progress bar is disabled
+			if r.ProgressRenderer != nil && r.ProgressRenderer.enabled {
+				// Clear progress bar before printing regular line
+				r.ProgressRenderer.clearProgress()
+			}
+			fmt.Fprintln(os.Stdout, line) // Display line
+			if r.ProgressRenderer != nil && r.ProgressRenderer.enabled {
+				// Re-render progress after printing line
+				r.ProgressRenderer.renderProgress(r.ProgressState)
+			}
+		}
+		done <- true
+	}()
+
+	// Process stderr
+	go func() {
+		scanner := bufio.NewScanner(stderrPipe)
+		for scanner.Scan() {
+			line := scanner.Text()
+			fmt.Fprintln(os.Stderr, line) // Display line
+			stderrBuf.WriteString(line + "\n") // Capture line
+		}
+		done <- true
+	}()
+
+	// Wait for both goroutines to finish
+	<-done
+	<-done
+
+	// Wait for command to complete
+	err = cmd.Wait()
+
+	// Clear progress bar when command finishes
+	if r.ProgressRenderer != nil {
+		r.ProgressRenderer.clearProgress()
+		fmt.Println() // Add newline after clearing
+	}
 
 	// Combine output line-by-line
 	combined := combineOutputLines(stdoutBuf.String(), stderrBuf.String())
@@ -589,6 +689,133 @@ func categorizeError(errorMsg string) ErrorType {
 	}
 
 	return ErrorOther
+}
+
+// parseProgressLine extracts progress information from yt-dlp output
+// yt-dlp outputs progress lines like: "[download] Downloading item 5 of 127"
+// Returns: (currentIndex, total, isProgressLine, error)
+func parseProgressLine(line string) (int, int, bool, error) {
+	// Match pattern: [download] Downloading item X of Y
+	re := regexp.MustCompile(`\[download\] Downloading item (\d+) of (\d+)`)
+	matches := re.FindStringSubmatch(line)
+
+	if len(matches) != 3 {
+		return 0, 0, false, nil // Not a progress line
+	}
+
+	current, err1 := strconv.Atoi(matches[1])
+	total, err2 := strconv.Atoi(matches[2])
+
+	if err1 != nil || err2 != nil {
+		return 0, 0, false, fmt.Errorf("failed to parse progress numbers")
+	}
+
+	return current, total, true, nil
+}
+
+// isSkipLine detects when yt-dlp skips an already-downloaded video
+// yt-dlp outputs: "[download] <filename> has already been downloaded" or "has already been recorded in the archive"
+// Returns: true if this is a skip message
+func isSkipLine(line string) bool {
+	return strings.Contains(line, "has already been downloaded") ||
+		strings.Contains(line, "has already been recorded in the archive")
+}
+
+// supportsANSI checks if the terminal supports ANSI escape codes
+func supportsANSI() bool {
+	// Check if stdout is a terminal (not piped or redirected)
+	fileInfo, err := os.Stdout.Stat()
+	if err != nil {
+		return false
+	}
+
+	// If output is piped or redirected, disable ANSI
+	if (fileInfo.Mode() & os.ModeCharDevice) == 0 {
+		return false
+	}
+
+	// Check for TERM environment variable (common on Unix-like systems)
+	term := os.Getenv("TERM")
+	if term != "" && term != "dumb" {
+		return true
+	}
+
+	// Check for Windows Terminal or other modern Windows terminals
+	// Windows Terminal sets WT_SESSION
+	if os.Getenv("WT_SESSION") != "" {
+		return true
+	}
+
+	// ConEmu sets ConEmuANSI
+	if os.Getenv("ConEmuANSI") == "ON" {
+		return true
+	}
+
+	// Default to false for safety (no progress bar if unsure)
+	return false
+}
+
+// renderProgress displays a live progress bar using ANSI escape codes
+// Format: "Downloading favorites (87/92) | ████████████░░░ 94.6% | Success: 85 | Failed: 2"
+func (pr *ProgressRenderer) renderProgress(state *ProgressState) {
+	if !pr.enabled {
+		return
+	}
+
+	// Calculate percentage
+	percentage := 0.0
+	if state.TotalVideos > 0 {
+		percentage = float64(state.CurrentIndex) / float64(state.TotalVideos) * 100
+	}
+
+	// Create progress bar (20 characters wide)
+	barWidth := 20
+	filledWidth := int(float64(barWidth) * percentage / 100)
+	if filledWidth > barWidth {
+		filledWidth = barWidth
+	}
+
+	bar := strings.Repeat("█", filledWidth) + strings.Repeat("░", barWidth-filledWidth)
+
+	// Color codes
+	green := "\033[32m"
+	red := "\033[31m"
+	reset := "\033[0m"
+
+	// Build progress line
+	line := fmt.Sprintf("\rDownloading %s (%d/%d) | %s %.1f%% | %sSuccess: %d%s | %sFailed: %d%s",
+		state.CollectionName,
+		state.CurrentIndex,
+		state.TotalVideos,
+		bar,
+		percentage,
+		green,
+		state.SuccessCount,
+		reset,
+		red,
+		state.FailureCount,
+		reset,
+	)
+
+	// Clear previous line if it was longer
+	if len(line) < pr.lastLineLen {
+		line += strings.Repeat(" ", pr.lastLineLen-len(line))
+	}
+	pr.lastLineLen = len(line)
+
+	// Print progress (using \r to overwrite current line)
+	fmt.Print(line)
+}
+
+// clearProgress clears the progress bar line
+func (pr *ProgressRenderer) clearProgress() {
+	if !pr.enabled || pr.lastLineLen == 0 {
+		return
+	}
+
+	// Clear line and move to start
+	fmt.Print("\r" + strings.Repeat(" ", pr.lastLineLen) + "\r")
+	pr.lastLineLen = 0
 }
 
 // calculateSessionTotals aggregates totals across all collections
@@ -747,8 +974,28 @@ func writeTroubleshootingTips(w *bufio.Writer, session *DownloadSession) {
 }
 
 // runYtdlp runs the yt-dlp command for the user
-func runYtdlp(psPrefix, outputName string, organizeByCollection, skipThumbnails, disableResume bool, cookieFile, cookieFromBrowser string, entries []VideoEntry) (*CollectionResult, error) {
-	return runYtdlpWithRunner(&RealCommandRunner{}, psPrefix, outputName, organizeByCollection, skipThumbnails, disableResume, cookieFile, cookieFromBrowser, entries)
+func runYtdlp(psPrefix, outputName string, organizeByCollection, skipThumbnails, disableResume, disableProgressBar bool, cookieFile, cookieFromBrowser string, entries []VideoEntry) (*CollectionResult, error) {
+	// Create progress renderer if enabled
+	var renderer *ProgressRenderer
+	var state *ProgressState
+	if !disableProgressBar && supportsANSI() {
+		collectionName := filepath.Base(filepath.Dir(outputName))
+		if collectionName == "." {
+			collectionName = "videos"
+		}
+		renderer = &ProgressRenderer{enabled: true}
+		state = &ProgressState{
+			CollectionName: collectionName,
+			TotalVideos:    len(entries),
+		}
+	}
+
+	runner := &RealCommandRunner{
+		ProgressRenderer: renderer,
+		ProgressState:    state,
+	}
+
+	return runYtdlpWithRunner(runner, psPrefix, outputName, organizeByCollection, skipThumbnails, disableResume, cookieFile, cookieFromBrowser, entries)
 }
 
 // runYtdlpWithRunner allows dependency injection for testing
@@ -1173,6 +1420,7 @@ func parseFlags() *Config {
 	noThumbnails := flag.Bool("no-thumbnails", false, "Skip thumbnail download (faster, less storage)")
 	indexOnly := flag.Bool("index-only", false, "Regenerate indexes from existing .info.json files without downloading")
 	disableResume := flag.Bool("disable-resume", false, "Disable resume functionality (force re-download all videos)")
+	noProgressBar := flag.Bool("no-progress-bar", false, "Disable progress bar (use traditional line-by-line output)")
 	cookies := flag.String("cookies", "", "Path to Netscape cookies.txt file for authentication")
 	cookiesFromBrowser := flag.String("cookies-from-browser", "", "Extract cookies from browser (chrome, firefox, edge, safari, etc.)")
 	help := flag.Bool("help", false, "Show help message")
@@ -1195,6 +1443,7 @@ func parseFlags() *Config {
 	config.SkipThumbnails = *noThumbnails
 	config.IndexOnly = *indexOnly
 	config.DisableResume = *disableResume
+	config.DisableProgressBar = *noProgressBar
 	config.CookieFile = *cookies
 	config.CookieFromBrowser = *cookiesFromBrowser
 
@@ -1236,6 +1485,7 @@ func printUsage() {
 	fmt.Println("  --no-thumbnails            Skip thumbnail download (faster, less storage)")
 	fmt.Println("  --index-only               Regenerate indexes from existing .info.json files")
 	fmt.Println("  --disable-resume           Disable resume functionality (force re-download all videos)")
+	fmt.Println("  --no-progress-bar          Disable progress bar (use traditional line-by-line output)")
 	fmt.Println("  --cookies <FILE>           Path to Netscape cookies.txt file for authentication")
 	fmt.Println("  --cookies-from-browser <NAME>  Extract cookies from browser (chrome, firefox, edge, etc.)")
 	fmt.Println("  --help, -h                 Show this help message")
@@ -1247,8 +1497,9 @@ func printUsage() {
 	fmt.Printf("  5) Skip thumbnails: %s --no-thumbnails\n", exeName)
 	fmt.Printf("  6) Regenerate index only: %s --index-only\n", exeName)
 	fmt.Printf("  7) Force re-download all: %s --disable-resume\n", exeName)
-	fmt.Printf("  8) Use cookies from file: %s --cookies cookies.txt\n", exeName)
-	fmt.Printf("  9) Extract cookies from Chrome: %s --cookies-from-browser chrome\n", exeName)
+	fmt.Printf("  8) Disable progress bar: %s --no-progress-bar\n", exeName)
+	fmt.Printf("  9) Use cookies from file: %s --cookies cookies.txt\n", exeName)
+	fmt.Printf("  10) Extract cookies from Chrome: %s --cookies-from-browser chrome\n", exeName)
 	fmt.Println("\nCollection Organization (Default):")
 	fmt.Println("  Videos are organized into subdirectories by collection type:")
 	fmt.Println("    favorites/    - Your favorited videos")
@@ -1412,7 +1663,7 @@ func main() {
 				collectionEntries := getEntriesForCollection(videoEntries, collection)
 
 				fmt.Printf("[*] Processing collection: %s\n", collection)
-				result, _ := runYtdlp(psPrefix, collectionOutputName, config.OrganizeByCollection, config.SkipThumbnails, config.DisableResume, config.CookieFile, config.CookieFromBrowser, collectionEntries)
+				result, _ := runYtdlp(psPrefix, collectionOutputName, config.OrganizeByCollection, config.SkipThumbnails, config.DisableResume, config.DisableProgressBar, config.CookieFile, config.CookieFromBrowser, collectionEntries)
 
 				// Track session results
 				if result != nil {
@@ -1432,7 +1683,7 @@ func main() {
 			}
 		} else {
 			// Flat structure
-			result, _ := runYtdlp(psPrefix, config.OutputName, config.OrganizeByCollection, config.SkipThumbnails, config.DisableResume, config.CookieFile, config.CookieFromBrowser, videoEntries)
+			result, _ := runYtdlp(psPrefix, config.OutputName, config.OrganizeByCollection, config.SkipThumbnails, config.DisableResume, config.DisableProgressBar, config.CookieFile, config.CookieFromBrowser, videoEntries)
 
 			// Track session results
 			if result != nil {
