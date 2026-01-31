@@ -576,6 +576,11 @@ func (r *RealCommandRunner) Run(name string, args ...string) (CapturedOutput, er
 					r.ProgressRenderer.renderProgress(r.ProgressState)
 					continue // Don't print skip lines when using progress bar
 				}
+
+				// Check for verbose line when progress bar is enabled
+				if r.ProgressRenderer.enabled && isVerboseLine(line) {
+					continue // Don't print verbose lines when using progress bar
+				}
 			}
 
 			// For non-progress lines or when progress bar is disabled
@@ -719,6 +724,36 @@ func parseProgressLine(line string) (int, int, bool, error) {
 func isSkipLine(line string) bool {
 	return strings.Contains(line, "has already been downloaded") ||
 		strings.Contains(line, "has already been recorded in the archive")
+}
+
+// isVerboseLine returns true if the line is routine yt-dlp output that can be suppressed
+// when progress bar is enabled. These are informational messages that add noise without value.
+// ERROR and WARNING messages are never considered verbose and will always be displayed.
+func isVerboseLine(line string) bool {
+	// Never suppress errors or warnings
+	if strings.Contains(line, "ERROR:") || strings.Contains(line, "WARNING:") {
+		return false
+	}
+
+	verbosePatterns := []string{
+		"[generic] Extracting URL:",
+		"[generic] ",
+		": Downloading webpage",
+		"[redirect] Following redirect to",
+		"[TikTok] Extracting URL:",
+		"[info] ",
+		": Downloading 1 format(s):",
+		"Video thumbnail is already present",
+		"Video metadata is already present",
+		"[download] 100%",
+	}
+
+	for _, pattern := range verbosePatterns {
+		if strings.Contains(line, pattern) {
+			return true
+		}
+	}
+	return false
 }
 
 // supportsANSI checks if the terminal supports ANSI escape codes

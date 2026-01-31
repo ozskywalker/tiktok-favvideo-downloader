@@ -3217,74 +3217,163 @@ func TestGetOrDownloadYtdlpWithAgeCheck(t *testing.T) {
 // TestParseProgressLine tests the progress line parser
 func TestParseProgressLine(t *testing.T) {
 	tests := []struct {
-		name        string
-		line        string
-		wantCurrent int
-		wantTotal   int
+		name           string
+		line           string
+		wantCurrent    int
+		wantTotal      int
 		wantIsProgress bool
-		wantError   bool
+		wantError      bool
 	}{
 		{
-			name:        "valid progress line",
-			line:        "[download] Downloading item 5 of 127",
-			wantCurrent: 5,
-			wantTotal:   127,
+			name:           "valid progress line",
+			line:           "[download] Downloading item 5 of 127",
+			wantCurrent:    5,
+			wantTotal:      127,
 			wantIsProgress: true,
-			wantError:   false,
+			wantError:      false,
 		},
 		{
-			name:        "valid progress line with different numbers",
-			line:        "[download] Downloading item 100 of 1000",
-			wantCurrent: 100,
-			wantTotal:   1000,
+			name:           "valid progress line with different numbers",
+			line:           "[download] Downloading item 100 of 1000",
+			wantCurrent:    100,
+			wantTotal:      1000,
 			wantIsProgress: true,
-			wantError:   false,
+			wantError:      false,
 		},
 		{
-			name:        "not a progress line",
-			line:        "[download] 100% of 38.78MiB in 00:45",
-			wantCurrent: 0,
-			wantTotal:   0,
+			name:           "not a progress line",
+			line:           "[download] 100% of 38.78MiB in 00:45",
+			wantCurrent:    0,
+			wantTotal:      0,
 			wantIsProgress: false,
-			wantError:   false,
+			wantError:      false,
 		},
 		{
-			name:        "error line",
-			line:        "ERROR: [TikTok] 123456: Your IP address is blocked",
-			wantCurrent: 0,
-			wantTotal:   0,
+			name:           "error line",
+			line:           "ERROR: [TikTok] 123456: Your IP address is blocked",
+			wantCurrent:    0,
+			wantTotal:      0,
 			wantIsProgress: false,
-			wantError:   false,
+			wantError:      false,
 		},
 		{
-			name:        "empty line",
-			line:        "",
-			wantCurrent: 0,
-			wantTotal:   0,
+			name:           "empty line",
+			line:           "",
+			wantCurrent:    0,
+			wantTotal:      0,
 			wantIsProgress: false,
-			wantError:   false,
+			wantError:      false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			current, total, isProgress, err := parseProgressLine(tt.line)
-			
+
 			if (err != nil) != tt.wantError {
 				t.Errorf("parseProgressLine() error = %v, wantError %v", err, tt.wantError)
 				return
 			}
-			
+
 			if current != tt.wantCurrent {
 				t.Errorf("parseProgressLine() current = %v, want %v", current, tt.wantCurrent)
 			}
-			
+
 			if total != tt.wantTotal {
 				t.Errorf("parseProgressLine() total = %v, want %v", total, tt.wantTotal)
 			}
-			
+
 			if isProgress != tt.wantIsProgress {
 				t.Errorf("parseProgressLine() isProgress = %v, want %v", isProgress, tt.wantIsProgress)
+			}
+		})
+	}
+}
+
+// TestIsVerboseLine tests the verbose line detection function
+func TestIsVerboseLine(t *testing.T) {
+	tests := []struct {
+		name        string
+		line        string
+		wantVerbose bool
+	}{
+		{
+			name:        "generic extracting URL",
+			line:        "[generic] Extracting URL: https://www.tiktokv.com/share/video/7554447149694553358/",
+			wantVerbose: true,
+		},
+		{
+			name:        "generic downloading webpage",
+			line:        "[generic] 7554447149694553358: Downloading webpage",
+			wantVerbose: true,
+		},
+		{
+			name:        "redirect message",
+			line:        "[redirect] Following redirect to https://www.tiktok.com/@/video/7554447149694553358/",
+			wantVerbose: true,
+		},
+		{
+			name:        "TikTok extracting URL",
+			line:        "[TikTok] Extracting URL: https://www.tiktok.com/@/video/7554447149694553358/",
+			wantVerbose: true,
+		},
+		{
+			name:        "TikTok downloading webpage",
+			line:        "[TikTok] 7554447149694553358: Downloading webpage",
+			wantVerbose: true,
+		},
+		{
+			name:        "info downloading format",
+			line:        "[info] 7554447149694553358: Downloading 1 format(s): bytevc1_1080p_1127004-1",
+			wantVerbose: true,
+		},
+		{
+			name:        "video thumbnail already present",
+			line:        "[info] Video thumbnail is already present",
+			wantVerbose: true,
+		},
+		{
+			name:        "video metadata already present",
+			line:        "[info] Video metadata is already present",
+			wantVerbose: true,
+		},
+		{
+			name:        "download 100% completion",
+			line:        "[download] 100% of 4.48MiB",
+			wantVerbose: true,
+		},
+		{
+			name:        "ERROR should not be verbose",
+			line:        "ERROR: [TikTok] 7576483608999775502: Your IP address is blocked from accessing this post",
+			wantVerbose: false,
+		},
+		{
+			name:        "WARNING should not be verbose",
+			line:        "WARNING: Failed to download thumbnail",
+			wantVerbose: false,
+		},
+		{
+			name:        "download progress line should not be verbose",
+			line:        "[download] Downloading item 5 of 127",
+			wantVerbose: false,
+		},
+		{
+			name:        "empty line should not be verbose",
+			line:        "",
+			wantVerbose: false,
+		},
+		{
+			name:        "random non-verbose line",
+			line:        "Starting video download...",
+			wantVerbose: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isVerboseLine(tt.line)
+			if got != tt.wantVerbose {
+				t.Errorf("isVerboseLine() = %v, want %v for line: %q", got, tt.wantVerbose, tt.line)
 			}
 		})
 	}
@@ -3301,12 +3390,12 @@ func TestProgressRenderer(t *testing.T) {
 			SuccessCount:   45,
 			FailureCount:   5,
 		}
-		
+
 		// Should not panic when disabled
 		renderer.renderProgress(state)
 		renderer.clearProgress()
 	})
-	
+
 	t.Run("enabled renderer formats correctly", func(t *testing.T) {
 		renderer := &ProgressRenderer{enabled: true}
 		state := &ProgressState{
@@ -3316,7 +3405,7 @@ func TestProgressRenderer(t *testing.T) {
 			SuccessCount:   45,
 			FailureCount:   5,
 		}
-		
+
 		// Should not panic when enabled
 		renderer.renderProgress(state)
 		renderer.clearProgress()
