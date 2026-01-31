@@ -576,6 +576,15 @@ func (r *RealCommandRunner) Run(name string, args ...string) (CapturedOutput, er
 					r.ProgressRenderer.renderProgress(r.ProgressState)
 					continue // Don't print skip lines when using progress bar
 				}
+
+				// Check for error line (failed downloads)
+				if isErrorLine(line) {
+					// Increment failure count for errors
+					r.ProgressState.FailureCount++
+					// Render progress bar to update failure count
+					r.ProgressRenderer.renderProgress(r.ProgressState)
+					// Don't continue here - let the error be printed below
+				}
 			}
 
 			// For non-progress lines or when progress bar is disabled
@@ -597,6 +606,23 @@ func (r *RealCommandRunner) Run(name string, args ...string) (CapturedOutput, er
 		scanner := bufio.NewScanner(stderrPipe)
 		for scanner.Scan() {
 			line := scanner.Text()
+
+			// Check for error line if progress rendering is enabled
+			if r.ProgressRenderer != nil && r.ProgressState != nil {
+				if isErrorLine(line) {
+					// Increment failure count for errors
+					r.ProgressState.FailureCount++
+					// Clear progress bar before printing error
+					r.ProgressRenderer.clearProgress()
+					fmt.Fprintln(os.Stderr, line)      // Display line
+					stderrBuf.WriteString(line + "\n") // Capture line
+					// Re-render progress after printing error
+					r.ProgressRenderer.renderProgress(r.ProgressState)
+					continue
+				}
+			}
+
+			// For non-error lines or when progress bar is disabled
 			fmt.Fprintln(os.Stderr, line)      // Display line
 			stderrBuf.WriteString(line + "\n") // Capture line
 		}
@@ -719,6 +745,13 @@ func parseProgressLine(line string) (int, int, bool, error) {
 func isSkipLine(line string) bool {
 	return strings.Contains(line, "has already been downloaded") ||
 		strings.Contains(line, "has already been recorded in the archive")
+}
+
+// isErrorLine detects when yt-dlp encounters an error during download
+// yt-dlp outputs errors like: "ERROR: [TikTok] VIDEO_ID: error message"
+// Returns: true if this is an error message
+func isErrorLine(line string) bool {
+	return strings.Contains(line, "ERROR: [TikTok]")
 }
 
 // supportsANSI checks if the terminal supports ANSI escape codes

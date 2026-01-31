@@ -3217,74 +3217,128 @@ func TestGetOrDownloadYtdlpWithAgeCheck(t *testing.T) {
 // TestParseProgressLine tests the progress line parser
 func TestParseProgressLine(t *testing.T) {
 	tests := []struct {
-		name        string
-		line        string
-		wantCurrent int
-		wantTotal   int
+		name           string
+		line           string
+		wantCurrent    int
+		wantTotal      int
 		wantIsProgress bool
-		wantError   bool
+		wantError      bool
 	}{
 		{
-			name:        "valid progress line",
-			line:        "[download] Downloading item 5 of 127",
-			wantCurrent: 5,
-			wantTotal:   127,
+			name:           "valid progress line",
+			line:           "[download] Downloading item 5 of 127",
+			wantCurrent:    5,
+			wantTotal:      127,
 			wantIsProgress: true,
-			wantError:   false,
+			wantError:      false,
 		},
 		{
-			name:        "valid progress line with different numbers",
-			line:        "[download] Downloading item 100 of 1000",
-			wantCurrent: 100,
-			wantTotal:   1000,
+			name:           "valid progress line with different numbers",
+			line:           "[download] Downloading item 100 of 1000",
+			wantCurrent:    100,
+			wantTotal:      1000,
 			wantIsProgress: true,
-			wantError:   false,
+			wantError:      false,
 		},
 		{
-			name:        "not a progress line",
-			line:        "[download] 100% of 38.78MiB in 00:45",
-			wantCurrent: 0,
-			wantTotal:   0,
+			name:           "not a progress line",
+			line:           "[download] 100% of 38.78MiB in 00:45",
+			wantCurrent:    0,
+			wantTotal:      0,
 			wantIsProgress: false,
-			wantError:   false,
+			wantError:      false,
 		},
 		{
-			name:        "error line",
-			line:        "ERROR: [TikTok] 123456: Your IP address is blocked",
-			wantCurrent: 0,
-			wantTotal:   0,
+			name:           "error line",
+			line:           "ERROR: [TikTok] 123456: Your IP address is blocked",
+			wantCurrent:    0,
+			wantTotal:      0,
 			wantIsProgress: false,
-			wantError:   false,
+			wantError:      false,
 		},
 		{
-			name:        "empty line",
-			line:        "",
-			wantCurrent: 0,
-			wantTotal:   0,
+			name:           "empty line",
+			line:           "",
+			wantCurrent:    0,
+			wantTotal:      0,
 			wantIsProgress: false,
-			wantError:   false,
+			wantError:      false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			current, total, isProgress, err := parseProgressLine(tt.line)
-			
+
 			if (err != nil) != tt.wantError {
 				t.Errorf("parseProgressLine() error = %v, wantError %v", err, tt.wantError)
 				return
 			}
-			
+
 			if current != tt.wantCurrent {
 				t.Errorf("parseProgressLine() current = %v, want %v", current, tt.wantCurrent)
 			}
-			
+
 			if total != tt.wantTotal {
 				t.Errorf("parseProgressLine() total = %v, want %v", total, tt.wantTotal)
 			}
-			
+
 			if isProgress != tt.wantIsProgress {
 				t.Errorf("parseProgressLine() isProgress = %v, want %v", isProgress, tt.wantIsProgress)
+			}
+		})
+	}
+}
+
+// TestIsErrorLine tests error line detection
+func TestIsErrorLine(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+		want bool
+	}{
+		{
+			name: "IP blocked error",
+			line: "ERROR: [TikTok] 7576483608999775502: Your IP address is blocked from accessing this post",
+			want: true,
+		},
+		{
+			name: "authentication required error",
+			line: "ERROR: [TikTok] 123456: This post may not be comfortable for some audiences. Log in for access",
+			want: true,
+		},
+		{
+			name: "not available error",
+			line: "ERROR: [TikTok] 789012: Video not available",
+			want: true,
+		},
+		{
+			name: "progress line",
+			line: "[download] Downloading item 5 of 127",
+			want: false,
+		},
+		{
+			name: "skip line",
+			line: "[download] video.mp4 has already been downloaded",
+			want: false,
+		},
+		{
+			name: "other output",
+			line: "[TikTok] Extracting URL: https://www.tiktok.com/@user/video/123456",
+			want: false,
+		},
+		{
+			name: "empty line",
+			line: "",
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isErrorLine(tt.line)
+			if got != tt.want {
+				t.Errorf("isErrorLine() = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -3301,12 +3355,12 @@ func TestProgressRenderer(t *testing.T) {
 			SuccessCount:   45,
 			FailureCount:   5,
 		}
-		
+
 		// Should not panic when disabled
 		renderer.renderProgress(state)
 		renderer.clearProgress()
 	})
-	
+
 	t.Run("enabled renderer formats correctly", func(t *testing.T) {
 		renderer := &ProgressRenderer{enabled: true}
 		state := &ProgressState{
@@ -3316,7 +3370,7 @@ func TestProgressRenderer(t *testing.T) {
 			SuccessCount:   45,
 			FailureCount:   5,
 		}
-		
+
 		// Should not panic when enabled
 		renderer.renderProgress(state)
 		renderer.clearProgress()
