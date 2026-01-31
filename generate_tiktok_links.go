@@ -1193,20 +1193,22 @@ func generateCollectionIndex(collectionDir string, entries []VideoEntry, failure
 			enrichedEntries[i].LikeCount = info.LikeCount
 			enrichedEntries[i].ThumbnailURL = info.Thumbnail
 
-			// Determine the local filename from the info
+			// Determine the local filename from the info (use basename only)
+			baseFilename := ""
 			if info.Filename != "" {
-				enrichedEntries[i].LocalFilename = filepath.Base(info.Filename)
+				baseFilename = filepath.Base(info.Filename)
+				enrichedEntries[i].LocalFilename = baseFilename
 			}
 
 			// Check if video file actually exists (not just .info.json)
-			videoPath := filepath.Join(collectionDir, enrichedEntries[i].LocalFilename)
+			videoPath := filepath.Join(collectionDir, baseFilename)
 			partialPath := videoPath + ".part"
 
 			if _, err := os.Stat(partialPath); err == nil {
 				// Partial download exists
 				enrichedEntries[i].Downloaded = false
 				enrichedEntries[i].DownloadError = "Download incomplete (found .part file)"
-			} else if enrichedEntries[i].LocalFilename != "" {
+			} else if baseFilename != "" {
 				if _, err := os.Stat(videoPath); err == nil {
 					// Full video file exists
 					enrichedEntries[i].Downloaded = true
@@ -1222,12 +1224,16 @@ func generateCollectionIndex(collectionDir string, entries []VideoEntry, failure
 			}
 
 			// Check for thumbnail file (try common extensions)
-			baseWithoutExt := strings.TrimSuffix(info.Filename, filepath.Ext(info.Filename))
-			for _, ext := range []string{".jpg", ".webp", ".png", ".JPG", ".WEBP", ".PNG"} {
-				thumbPath := baseWithoutExt + ext
-				if _, err := os.Stat(filepath.Join(collectionDir, filepath.Base(thumbPath))); err == nil {
-					enrichedEntries[i].ThumbnailFile = filepath.Base(thumbPath)
-					break
+			// Use the base filename (without extension) to search for thumbnails
+			if baseFilename != "" {
+				baseWithoutExt := strings.TrimSuffix(baseFilename, filepath.Ext(baseFilename))
+				for _, ext := range []string{".jpg", ".webp", ".png", ".JPG", ".WEBP", ".PNG"} {
+					thumbFilename := baseWithoutExt + ext
+					thumbPath := filepath.Join(collectionDir, thumbFilename)
+					if _, err := os.Stat(thumbPath); err == nil {
+						enrichedEntries[i].ThumbnailFile = thumbFilename
+						break
+					}
 				}
 			}
 		} else {
