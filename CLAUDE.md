@@ -37,7 +37,45 @@ tiktok-favvideo-downloader.exe --cookies-from-browser chrome
 
 # Combine with other flags
 tiktok-favvideo-downloader.exe --cookies-from-browser firefox --no-thumbnails
+
+# Disable resume functionality (force re-download all videos)
+tiktok-favvideo-downloader.exe --disable-resume
 ```
+
+### Resume Download Functionality
+
+**By default, the application automatically resumes downloads and skips already-downloaded videos.**
+
+This prevents:
+- Wasted bandwidth from re-downloading existing videos
+- IP rate-limiting from excessive requests to TikTok
+- Unnecessary storage usage
+
+**How It Works**:
+- Uses yt-dlp's `--download-archive` flag to maintain a list of downloaded video IDs
+- Archive files are created automatically:
+  - Collection mode: `favorites/download_archive.txt`, `liked/download_archive.txt`
+  - Flat mode: `download_archive.txt` in root directory
+- Each archive file contains one line per video: `tiktok <video_id>`
+- Videos in the archive are automatically skipped on subsequent runs
+- Partial downloads (`.part` files) are automatically resumed via `--continue` flag
+
+**Archive File Management**:
+- Archive files are created automatically on first run
+- Safe to manually edit - remove a line to force re-download of that specific video
+- Safe to delete entire archive file to force full re-download of all videos
+- Compatible with yt-dlp's standard archive format
+
+**Disabling Resume**:
+Use `--disable-resume` flag to force re-download of all videos (ignores archive):
+```bash
+tiktok-favvideo-downloader.exe --disable-resume
+```
+
+This is useful for:
+- Forcing re-download of all videos (e.g., after format changes)
+- Testing download functionality
+- Replacing corrupted or incomplete downloads
 
 ### Collection Directory Structure
 ```
@@ -47,6 +85,7 @@ project-folder/
 │
 ├── favorites/                                        # Favorited videos collection
 │   ├── fav_videos.txt                               # URL list (yt-dlp compatible)
+│   ├── download_archive.txt                         # Resume tracking (skips downloaded videos)
 │   ├── index.json                                   # Machine-readable metadata index
 │   ├── index.html                                   # Visual browser (open in Chrome)
 │   ├── 20260129_7600559584901647646_Funny_Cat.mp4   # Video file
@@ -56,6 +95,7 @@ project-folder/
 │
 └── liked/                                           # Liked videos collection (if opted in)
     ├── liked_videos.txt                             # Note: different filename for liked
+    ├── download_archive.txt                         # Resume tracking for liked videos
     ├── index.json
     ├── index.html
     └── ...
@@ -256,9 +296,15 @@ This is a single-package Go application (`package main`) that downloads TikTok f
 
 3. **yt-dlp Integration**: Downloads and manages the yt-dlp executable
    - `getOrDownloadYtdlp()` automatically downloads latest yt-dlp.exe from GitHub if not present
-   - `runYtdlp()` executes yt-dlp with `--write-info-json` and optional `--write-thumbnail` flags
+   - `runYtdlp()` executes yt-dlp with multiple flags:
+     - `--write-info-json` - Save metadata for each video
+     - `--write-thumbnail` - Download thumbnails (optional via `--no-thumbnails`)
+     - `--download-archive` - Track downloaded videos for resume functionality (default)
+     - `--no-overwrites` - Skip re-downloading existing files (default)
+     - `--continue` - Resume partial downloads (default)
    - Supports `--no-thumbnails` flag to skip thumbnail downloads
    - Supports `--cookies` and `--cookies-from-browser` flags for age-restricted videos
+   - Supports `--disable-resume` flag to force re-download all videos
    - New filename format includes video ID and truncated title
 
 4. **Video Metadata & Indexing**: Generates browsable indexes after download
@@ -281,10 +327,11 @@ This is a single-package Go application (`package main`) that downloads TikTok f
    - Uses `io.MultiWriter` to capture output while still displaying real-time progress
 
 6. **CLI Flag Parsing**: Command-line argument handling
-   - `parseFlags()` handles `--flat-structure`, `--no-thumbnails`, `--index-only`, `--cookies`, `--cookies-from-browser`, `--help` flags
+   - `parseFlags()` handles `--flat-structure`, `--no-thumbnails`, `--index-only`, `--disable-resume`, `--cookies`, `--cookies-from-browser`, `--help` flags
    - `Config` struct stores application configuration
    - Supports positional arguments for custom JSON file paths
    - `--index-only` mode regenerates indexes from existing .info.json files without downloading
+   - `--disable-resume` mode forces re-download of all videos (ignores download archive)
    - Cookie validation functions: `validateCookieFile()`, `validateBrowserName()`, `promptForCookies()`
 
 6. **Cross-platform Command Execution**: Handles PowerShell vs Command Prompt differences

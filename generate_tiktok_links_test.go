@@ -299,6 +299,7 @@ func TestRunYtdlpWithRunner(t *testing.T) {
 		outputName           string
 		organizeByCollection bool
 		skipThumbnails       bool
+		disableResume        bool
 		cookieFile           string
 		cookieFromBrowser    string
 		shouldFail           bool
@@ -311,6 +312,7 @@ func TestRunYtdlpWithRunner(t *testing.T) {
 			outputName:           "test_videos.txt",
 			organizeByCollection: false,
 			skipThumbnails:       false,
+			disableResume:        true,
 			shouldFail:           false,
 			expectCmd:            "yt-dlp.exe",
 			expectArgs:           []string{"-a", "test_videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json", "--write-thumbnail"},
@@ -321,6 +323,7 @@ func TestRunYtdlpWithRunner(t *testing.T) {
 			outputName:           "fav_videos.txt",
 			organizeByCollection: false,
 			skipThumbnails:       false,
+			disableResume:        true,
 			shouldFail:           false,
 			expectCmd:            ".\\yt-dlp.exe",
 			expectArgs:           []string{"-a", "fav_videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json", "--write-thumbnail"},
@@ -331,6 +334,7 @@ func TestRunYtdlpWithRunner(t *testing.T) {
 			outputName:           "videos.txt",
 			organizeByCollection: false,
 			skipThumbnails:       false,
+			disableResume:        true,
 			shouldFail:           true,
 			expectCmd:            "yt-dlp.exe",
 			expectArgs:           []string{"-a", "videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json", "--write-thumbnail"},
@@ -341,6 +345,7 @@ func TestRunYtdlpWithRunner(t *testing.T) {
 			outputName:           filepath.Join("favorites", "fav_videos.txt"),
 			organizeByCollection: true,
 			skipThumbnails:       false,
+			disableResume:        true,
 			shouldFail:           false,
 			expectCmd:            "yt-dlp.exe",
 			expectArgs:           []string{"-a", filepath.Join("favorites", "fav_videos.txt"), "--output", filepath.Join("favorites", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s"), "--write-info-json", "--write-thumbnail"},
@@ -351,6 +356,7 @@ func TestRunYtdlpWithRunner(t *testing.T) {
 			outputName:           "test_videos.txt",
 			organizeByCollection: false,
 			skipThumbnails:       true,
+			disableResume:        true,
 			shouldFail:           false,
 			expectCmd:            "yt-dlp.exe",
 			expectArgs:           []string{"-a", "test_videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json"},
@@ -361,6 +367,7 @@ func TestRunYtdlpWithRunner(t *testing.T) {
 			outputName:           "test_videos.txt",
 			organizeByCollection: false,
 			skipThumbnails:       false,
+			disableResume:        true,
 			cookieFile:           "cookies.txt",
 			cookieFromBrowser:    "",
 			shouldFail:           false,
@@ -373,6 +380,7 @@ func TestRunYtdlpWithRunner(t *testing.T) {
 			outputName:           "test_videos.txt",
 			organizeByCollection: false,
 			skipThumbnails:       false,
+			disableResume:        true,
 			cookieFile:           "",
 			cookieFromBrowser:    "chrome",
 			shouldFail:           false,
@@ -385,6 +393,7 @@ func TestRunYtdlpWithRunner(t *testing.T) {
 			outputName:           "test_videos.txt",
 			organizeByCollection: false,
 			skipThumbnails:       true,
+			disableResume:        true,
 			cookieFile:           "cookies.txt",
 			cookieFromBrowser:    "",
 			shouldFail:           false,
@@ -397,11 +406,57 @@ func TestRunYtdlpWithRunner(t *testing.T) {
 			outputName:           filepath.Join("favorites", "fav_videos.txt"),
 			organizeByCollection: true,
 			skipThumbnails:       false,
+			disableResume:        true,
 			cookieFile:           "",
 			cookieFromBrowser:    "firefox",
 			shouldFail:           false,
 			expectCmd:            "yt-dlp.exe",
 			expectArgs:           []string{"-a", filepath.Join("favorites", "fav_videos.txt"), "--output", filepath.Join("favorites", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s"), "--write-info-json", "--write-thumbnail", "--cookies-from-browser", "firefox"},
+		},
+		{
+			name:                 "resume enabled with flat structure",
+			psPrefix:             "",
+			outputName:           "test_videos.txt",
+			organizeByCollection: false,
+			skipThumbnails:       false,
+			disableResume:        false,
+			shouldFail:           false,
+			expectCmd:            "yt-dlp.exe",
+			expectArgs:           []string{"-a", "test_videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json", "--write-thumbnail", "--download-archive", "download_archive.txt", "--no-overwrites", "--continue"},
+		},
+		{
+			name:                 "resume enabled with collection organization",
+			psPrefix:             "",
+			outputName:           filepath.Join("favorites", "fav_videos.txt"),
+			organizeByCollection: true,
+			skipThumbnails:       false,
+			disableResume:        false,
+			shouldFail:           false,
+			expectCmd:            "yt-dlp.exe",
+			expectArgs:           []string{"-a", filepath.Join("favorites", "fav_videos.txt"), "--output", filepath.Join("favorites", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s"), "--write-info-json", "--write-thumbnail", "--download-archive", filepath.Join("favorites", "download_archive.txt"), "--no-overwrites", "--continue"},
+		},
+		{
+			name:                 "resume enabled with skip thumbnails",
+			psPrefix:             "",
+			outputName:           "test_videos.txt",
+			organizeByCollection: false,
+			skipThumbnails:       true,
+			disableResume:        false,
+			shouldFail:           false,
+			expectCmd:            "yt-dlp.exe",
+			expectArgs:           []string{"-a", "test_videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json", "--download-archive", "download_archive.txt", "--no-overwrites", "--continue"},
+		},
+		{
+			name:                 "resume enabled with cookies",
+			psPrefix:             "",
+			outputName:           "test_videos.txt",
+			organizeByCollection: false,
+			skipThumbnails:       false,
+			disableResume:        false,
+			cookieFile:           "cookies.txt",
+			shouldFail:           false,
+			expectCmd:            "yt-dlp.exe",
+			expectArgs:           []string{"-a", "test_videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json", "--write-thumbnail", "--cookies", "cookies.txt", "--download-archive", "download_archive.txt", "--no-overwrites", "--continue"},
 		},
 	}
 
@@ -415,7 +470,7 @@ func TestRunYtdlpWithRunner(t *testing.T) {
 			}
 
 			// Capture output for verification
-			_, _ = runYtdlpWithRunner(mockRunner, tt.psPrefix, tt.outputName, tt.organizeByCollection, tt.skipThumbnails, tt.cookieFile, tt.cookieFromBrowser, testEntries)
+			_, _ = runYtdlpWithRunner(mockRunner, tt.psPrefix, tt.outputName, tt.organizeByCollection, tt.skipThumbnails, tt.disableResume, tt.cookieFile, tt.cookieFromBrowser, testEntries)
 
 			// Verify command was called correctly
 			if len(mockRunner.Commands) != 1 {

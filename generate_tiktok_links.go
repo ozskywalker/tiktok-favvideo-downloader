@@ -167,6 +167,7 @@ type Config struct {
 	IncludeLiked         bool
 	SkipThumbnails       bool
 	IndexOnly            bool
+	DisableResume        bool   // Disable resume functionality (force re-download all videos)
 	JSONFile             string
 	OutputName           string
 	CookieFile           string // Path to Netscape cookies.txt file
@@ -746,12 +747,12 @@ func writeTroubleshootingTips(w *bufio.Writer, session *DownloadSession) {
 }
 
 // runYtdlp runs the yt-dlp command for the user
-func runYtdlp(psPrefix, outputName string, organizeByCollection, skipThumbnails bool, cookieFile, cookieFromBrowser string, entries []VideoEntry) (*CollectionResult, error) {
-	return runYtdlpWithRunner(&RealCommandRunner{}, psPrefix, outputName, organizeByCollection, skipThumbnails, cookieFile, cookieFromBrowser, entries)
+func runYtdlp(psPrefix, outputName string, organizeByCollection, skipThumbnails, disableResume bool, cookieFile, cookieFromBrowser string, entries []VideoEntry) (*CollectionResult, error) {
+	return runYtdlpWithRunner(&RealCommandRunner{}, psPrefix, outputName, organizeByCollection, skipThumbnails, disableResume, cookieFile, cookieFromBrowser, entries)
 }
 
 // runYtdlpWithRunner allows dependency injection for testing
-func runYtdlpWithRunner(runner CommandRunner, psPrefix, outputName string, organizeByCollection, skipThumbnails bool, cookieFile, cookieFromBrowser string, entries []VideoEntry) (*CollectionResult, error) {
+func runYtdlpWithRunner(runner CommandRunner, psPrefix, outputName string, organizeByCollection, skipThumbnails, disableResume bool, cookieFile, cookieFromBrowser string, entries []VideoEntry) (*CollectionResult, error) {
 	fmt.Println("[*] Running yt-dlp now...")
 	cmdStr := fmt.Sprintf("%syt-dlp.exe", psPrefix)
 
@@ -785,6 +786,23 @@ func runYtdlpWithRunner(runner CommandRunner, psPrefix, outputName string, organ
 	}
 	if cookieFromBrowser != "" {
 		args = append(args, "--cookies-from-browser", cookieFromBrowser)
+	}
+
+	// Add resume functionality flags unless disabled
+	if !disableResume {
+		// Calculate archive file path based on organization mode
+		var archivePath string
+		if organizeByCollection {
+			dir := filepath.Dir(outputName)
+			archivePath = filepath.Join(dir, "download_archive.txt")
+		} else {
+			archivePath = "download_archive.txt"
+		}
+
+		// Add flags for resume functionality
+		args = append(args, "--download-archive", archivePath)
+		args = append(args, "--no-overwrites")
+		args = append(args, "--continue")
 	}
 
 	// Execute and capture output
@@ -1154,6 +1172,7 @@ func parseFlags() *Config {
 	flatStructure := flag.Bool("flat-structure", false, "Disable collection organization (use flat directory structure)")
 	noThumbnails := flag.Bool("no-thumbnails", false, "Skip thumbnail download (faster, less storage)")
 	indexOnly := flag.Bool("index-only", false, "Regenerate indexes from existing .info.json files without downloading")
+	disableResume := flag.Bool("disable-resume", false, "Disable resume functionality (force re-download all videos)")
 	cookies := flag.String("cookies", "", "Path to Netscape cookies.txt file for authentication")
 	cookiesFromBrowser := flag.String("cookies-from-browser", "", "Extract cookies from browser (chrome, firefox, edge, safari, etc.)")
 	help := flag.Bool("help", false, "Show help message")
@@ -1175,6 +1194,7 @@ func parseFlags() *Config {
 	config.OrganizeByCollection = !*flatStructure
 	config.SkipThumbnails = *noThumbnails
 	config.IndexOnly = *indexOnly
+	config.DisableResume = *disableResume
 	config.CookieFile = *cookies
 	config.CookieFromBrowser = *cookiesFromBrowser
 
@@ -1215,6 +1235,7 @@ func printUsage() {
 	fmt.Println("  --flat-structure           Disable collection organization (use flat directory structure)")
 	fmt.Println("  --no-thumbnails            Skip thumbnail download (faster, less storage)")
 	fmt.Println("  --index-only               Regenerate indexes from existing .info.json files")
+	fmt.Println("  --disable-resume           Disable resume functionality (force re-download all videos)")
 	fmt.Println("  --cookies <FILE>           Path to Netscape cookies.txt file for authentication")
 	fmt.Println("  --cookies-from-browser <NAME>  Extract cookies from browser (chrome, firefox, edge, etc.)")
 	fmt.Println("  --help, -h                 Show this help message")
@@ -1225,8 +1246,9 @@ func printUsage() {
 	fmt.Printf("  4) Use flat structure: %s --flat-structure\n", exeName)
 	fmt.Printf("  5) Skip thumbnails: %s --no-thumbnails\n", exeName)
 	fmt.Printf("  6) Regenerate index only: %s --index-only\n", exeName)
-	fmt.Printf("  7) Use cookies from file: %s --cookies cookies.txt\n", exeName)
-	fmt.Printf("  8) Extract cookies from Chrome: %s --cookies-from-browser chrome\n", exeName)
+	fmt.Printf("  7) Force re-download all: %s --disable-resume\n", exeName)
+	fmt.Printf("  8) Use cookies from file: %s --cookies cookies.txt\n", exeName)
+	fmt.Printf("  9) Extract cookies from Chrome: %s --cookies-from-browser chrome\n", exeName)
 	fmt.Println("\nCollection Organization (Default):")
 	fmt.Println("  Videos are organized into subdirectories by collection type:")
 	fmt.Println("    favorites/    - Your favorited videos")
@@ -1390,7 +1412,7 @@ func main() {
 				collectionEntries := getEntriesForCollection(videoEntries, collection)
 
 				fmt.Printf("[*] Processing collection: %s\n", collection)
-				result, _ := runYtdlp(psPrefix, collectionOutputName, config.OrganizeByCollection, config.SkipThumbnails, config.CookieFile, config.CookieFromBrowser, collectionEntries)
+				result, _ := runYtdlp(psPrefix, collectionOutputName, config.OrganizeByCollection, config.SkipThumbnails, config.DisableResume, config.CookieFile, config.CookieFromBrowser, collectionEntries)
 
 				// Track session results
 				if result != nil {
@@ -1410,7 +1432,7 @@ func main() {
 			}
 		} else {
 			// Flat structure
-			result, _ := runYtdlp(psPrefix, config.OutputName, config.OrganizeByCollection, config.SkipThumbnails, config.CookieFile, config.CookieFromBrowser, videoEntries)
+			result, _ := runYtdlp(psPrefix, config.OutputName, config.OrganizeByCollection, config.SkipThumbnails, config.DisableResume, config.CookieFile, config.CookieFromBrowser, videoEntries)
 
 			// Track session results
 			if result != nil {
