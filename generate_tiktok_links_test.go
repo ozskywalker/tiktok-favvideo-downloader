@@ -4002,25 +4002,25 @@ func TestOutputProcessing(t *testing.T) {
 	// Simulate yt-dlp output
 	go func() {
 		// 1. Normal progress lines
-		fmt.Fprintln(stdoutWriter, "[download] Downloading item 1 of 10")
+		_, _ = fmt.Fprintln(stdoutWriter, "[download] Downloading item 1 of 10")
 		time.Sleep(10 * time.Millisecond) // Give time for processing
-		fmt.Fprintln(stdoutWriter, "[download] Downloading item 2 of 10")
-		
+		_, _ = fmt.Fprintln(stdoutWriter, "[download] Downloading item 2 of 10")
+
 		// 2. Skip line
-		fmt.Fprintln(stdoutWriter, "[download] video.mp4 has already been downloaded")
-		
+		_, _ = fmt.Fprintln(stdoutWriter, "[download] video.mp4 has already been downloaded")
+
 		// 3. Error line (on stderr usually, but sometimes stdout depending on config)
-		fmt.Fprintln(stderrWriter, "ERROR: [TikTok] 12345: Video not available")
-		
+		_, _ = fmt.Fprintln(stderrWriter, "ERROR: [TikTok] 12345: Video not available")
+
 		// 4. Verbose line (should be ignored/suppressed from captured output if renderer enabled)
-		fmt.Fprintln(stdoutWriter, "[generic] Extracting URL: ...")
-		
+		_, _ = fmt.Fprintln(stdoutWriter, "[generic] Extracting URL: ...")
+
 		// 5. Normal line (should clear progress, print, and re-render)
-		fmt.Fprintln(stdoutWriter, "Some other output")
+		_, _ = fmt.Fprintln(stdoutWriter, "Some other output")
 
 		// Close writers to signal EOF
-		stdoutWriter.Close()
-		stderrWriter.Close()
+		_ = stdoutWriter.Close()
+		_ = stderrWriter.Close()
 	}()
 
 	// Wait for processing to finish
@@ -4036,7 +4036,7 @@ func TestOutputProcessing(t *testing.T) {
 	// - "Downloading item 2 of 10" -> CurrentIndex = 2
 	// - "already downloaded" -> CurrentIndex++ (becomes 3), SkippedCount++ (becomes 1)
 	// - "ERROR" -> FailureCount++ (becomes 1)
-	
+
 	if state.CurrentIndex != 3 {
 		t.Errorf("Expected CurrentIndex 3, got %d", state.CurrentIndex)
 	}
@@ -4049,22 +4049,22 @@ func TestOutputProcessing(t *testing.T) {
 
 	// Verify Output
 	output := capturedStdout.String()
-	
+
 	// Should contain progress bars
 	if !strings.Contains(output, "Downloading test_collection") {
 		t.Error("Output should contain progress bar")
 	}
-	
+
 	// Should NOT contain verbose line (suppressed)
 	if strings.Contains(output, "[generic] Extracting URL") {
 		t.Error("Verbose output should have been suppressed")
 	}
-	
+
 	// Should contain "Some other output"
 	if !strings.Contains(output, "Some other output") {
 		t.Error("Normal output should be preserved")
 	}
-	
+
 	// Should contain ANSI clear codes (carriage returns)
 	if !strings.Contains(output, "\r") {
 		t.Error("Output should contain carriage returns for progress bar updates")

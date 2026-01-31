@@ -711,7 +711,7 @@ func processOutput(stdout, stderr io.Reader, stdoutWriter, stderrWriter io.Write
 		scanner := bufio.NewScanner(stdout)
 		for scanner.Scan() {
 			line := scanner.Text()
-			
+
 			// Check for progress line if progress rendering is enabled
 			if renderer != nil && state != nil {
 				current, _, isProgress, err := parseProgressLine(line)
@@ -767,7 +767,7 @@ func processOutput(stdout, stderr io.Reader, stdoutWriter, stderrWriter io.Write
 		scanner := bufio.NewScanner(stderr)
 		for scanner.Scan() {
 			line := scanner.Text()
-			
+
 			// Check for error line (failed downloads) when progress bar is enabled
 			if renderer != nil && state != nil {
 				if isErrorLine(line) {
@@ -780,7 +780,7 @@ func processOutput(stdout, stderr io.Reader, stdoutWriter, stderrWriter io.Write
 			if renderer != nil && renderer.enabled {
 				renderer.clearProgress()
 			}
-			fmt.Fprintln(stderrWriter, line) // Display line
+			_, _ = fmt.Fprintln(stderrWriter, line) // Display line
 			// Re-render progress bar after printing error line
 			if renderer != nil && renderer.enabled {
 				renderer.renderProgress(state)
@@ -796,7 +796,7 @@ func processOutput(stdout, stderr io.Reader, stdoutWriter, stderrWriter io.Write
 	// Clear progress bar when processing finishes
 	if renderer != nil {
 		renderer.clearProgress()
-		fmt.Fprintln(stdoutWriter) // Add newline after clearing
+		_, _ = fmt.Fprintln(stdoutWriter) // Add newline after clearing
 	}
 
 	return nil
@@ -1027,7 +1027,7 @@ func (pr *ProgressRenderer) renderProgress(state *ProgressState) {
 	pr.lastLineLen = len(line)
 
 	// Print progress (using \r to overwrite current line)
-	fmt.Fprint(out, line)
+	_, _ = fmt.Fprint(out, line)
 }
 
 // clearProgress clears the progress bar line
@@ -1043,7 +1043,7 @@ func (pr *ProgressRenderer) clearProgress() {
 	}
 
 	// Clear line and move to start
-	fmt.Fprint(out, "\r"+strings.Repeat(" ", pr.lastLineLen)+"\r")
+	_, _ = fmt.Fprint(out, "\r"+strings.Repeat(" ", pr.lastLineLen)+"\r")
 	pr.lastLineLen = 0
 }
 
@@ -1335,7 +1335,7 @@ func runYtdlpWithRunner(runner CommandRunner, psPrefix, outputName string, organ
 			}
 		} else {
 			targetFile = tempFile
-			defer os.Remove(tempFile) // Clean up temp file
+			defer func() { _ = os.Remove(tempFile) }() // Clean up temp file
 		}
 	}
 
@@ -2060,13 +2060,13 @@ func main() {
 			}
 		}
 
-		        // Finalize session
-				session.EndTime = time.Now()
-				session.TotalAttempted, session.TotalSuccess, session.TotalFailed, session.TotalSkipped =
-					calculateSessionTotals(session.Collections)
-		
-				// Print summary
-				printSessionSummary(session)
+		// Finalize session
+		session.EndTime = time.Now()
+		session.TotalAttempted, session.TotalSuccess, session.TotalFailed, session.TotalSkipped =
+			calculateSessionTotals(session.Collections)
+
+		// Print summary
+		printSessionSummary(session)
 		// Write results.txt
 		if err := writeResultsFile(session); err != nil {
 			fmt.Printf("[!] Warning: Failed to write results.txt: %v\n", err)
