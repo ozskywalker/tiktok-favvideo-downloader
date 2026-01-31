@@ -699,9 +699,8 @@ func (r *RealCommandRunner) Run(name string, args ...string) (CapturedOutput, er
 				if isErrorLine(line) {
 					// Increment failure count for errors
 					r.ProgressState.FailureCount++
-					// Render progress bar to update failure count
-					r.ProgressRenderer.renderProgress(r.ProgressState)
-					// Don't continue here - let the error be printed below
+					// Don't render here - let it fall through to normal print logic
+					// which will clear, print, and re-render properly
 				}
 
 				// Check for verbose line when progress bar is enabled
@@ -729,8 +728,25 @@ func (r *RealCommandRunner) Run(name string, args ...string) (CapturedOutput, er
 		scanner := bufio.NewScanner(stderrPipe)
 		for scanner.Scan() {
 			line := scanner.Text()
-			fmt.Fprintln(os.Stderr, line)      // Display line
 			stderrBuf.WriteString(line + "\n") // Capture line
+
+			// Check for error line (failed downloads) when progress bar is enabled
+			if r.ProgressRenderer != nil && r.ProgressState != nil {
+				if isErrorLine(line) {
+					// Increment failure count for errors
+					r.ProgressState.FailureCount++
+				}
+			}
+
+			// Clear progress bar before printing error line
+			if r.ProgressRenderer != nil && r.ProgressRenderer.enabled {
+				r.ProgressRenderer.clearProgress()
+			}
+			fmt.Fprintln(os.Stderr, line) // Display line
+			// Re-render progress bar after printing error line
+			if r.ProgressRenderer != nil && r.ProgressRenderer.enabled {
+				r.ProgressRenderer.renderProgress(r.ProgressState)
+			}
 		}
 		done <- true
 	}()
