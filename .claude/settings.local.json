@@ -9,7 +9,9 @@
       "Bash(go build:*)",
       "Bash(./tiktok-favvideo-downloader.exe --help)",
       "Bash(gh issue view:*)",
-      "Bash(golangci-lint run:*)"
+      "Bash(golangci-lint run:*)",
+      "Bash(git checkout:*)",
+      "Bash(git pull:*)"
     ],
     "deny": [],
     "ask": []
