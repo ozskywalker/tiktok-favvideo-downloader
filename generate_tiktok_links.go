@@ -222,6 +222,87 @@ func isFileOlderThan30Days(path string) (bool, error) {
 	return modTime.Before(thirtyDaysAgo), nil
 }
 
+// getYtdlpVersion runs yt-dlp --version and returns the version string (e.g., "2026.01.29")
+func getYtdlpVersion(exePath string) (string, error) {
+	// Use explicit relative path for Go 1.19+ security (cannot run executables from current dir without ./)
+	cmd := exec.Command("."+string(filepath.Separator)+exePath, "--version")
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("failed to run %s --version: %v", exePath, err)
+	}
+	version := strings.TrimSpace(string(output))
+	if version == "" {
+		return "", fmt.Errorf("yt-dlp --version returned empty output")
+	}
+	return version, nil
+}
+
+// getLatestYtdlpVersion fetches the latest yt-dlp version from GitHub releases
+// It uses the redirect from /releases/latest to determine the version tag
+func getLatestYtdlpVersion(client *http.Client) (string, error) {
+	// Create a client that doesn't follow redirects so we can capture the Location header
+	checkRedirect := client.CheckRedirect
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse // Don't follow redirects
+	}
+	defer func() { client.CheckRedirect = checkRedirect }()
+
+	resp, err := client.Get("https://github.com/yt-dlp/yt-dlp/releases/latest")
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch GitHub releases: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	// GitHub returns 302 redirect to /releases/tag/YYYY.MM.DD
+	if resp.StatusCode != http.StatusFound && resp.StatusCode != http.StatusMovedPermanently {
+		return "", fmt.Errorf("unexpected response status: %d", resp.StatusCode)
+	}
+
+	location := resp.Header.Get("Location")
+	if location == "" {
+		return "", fmt.Errorf("no redirect location in response")
+	}
+
+	// Extract version from URL like https://github.com/yt-dlp/yt-dlp/releases/tag/2026.01.29
+	parts := strings.Split(location, "/tag/")
+	if len(parts) != 2 {
+		return "", fmt.Errorf("unexpected redirect URL format: %s", location)
+	}
+
+	version := strings.TrimSpace(parts[1])
+	if version == "" {
+		return "", fmt.Errorf("empty version in redirect URL")
+	}
+
+	return version, nil
+}
+
+// compareVersions compares two yt-dlp version strings in YYYY.MM.DD format
+// Returns: -1 if local < remote (needs update), 0 if equal, 1 if local > remote
+func compareVersions(local, remote string) int {
+	// Parse versions - yt-dlp uses YYYY.MM.DD format
+	// Simple string comparison works since format is consistent and zero-padded
+	if local == remote {
+		return 0
+	}
+	if local < remote {
+		return -1
+	}
+	return 1
+}
+
+// updateYtdlp runs yt-dlp --update to self-update the binary
+func updateYtdlp(exePath string) error {
+	fmt.Println("[*] Running yt-dlp --update...")
+	// Use explicit relative path for Go 1.19+ security
+	cmd := exec.Command("."+string(filepath.Separator)+exePath, "--update")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("yt-dlp --update failed: %v", err)
+	}
+	return nil
+}
 // promptForUpdate asks the user if they want to update yt-dlp.exe
 // Returns true if user wants to update (default is yes)
 func promptForUpdate() bool {
@@ -371,7 +452,8 @@ func getOrDownloadYtdlp(client *http.Client, exeName string) error {
 
 // getGalleryDlVersion runs gallery-dl --version and returns the version string
 func getGalleryDlVersion(exePath string) (string, error) {
-	cmd := exec.Command(exePath, "--version")
+	// Use explicit relative path for Go 1.19+ security
+	cmd := exec.Command("."+string(filepath.Separator)+exePath, "--version")
 	output, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to run %s --version: %v", exePath, err)
@@ -687,22 +769,21 @@ func isPhotoPost(originalURL string, client *http.Client) (bool, string, error) 
 	// Set a user agent to avoid blocks
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 
-	// Create a client that follows redirects (default behavior)
-	// Use a client with redirect following to get the final URL
+	// Use the injected client but configure redirect handling to capture the final URL
+	// Save original redirect policy and restore after
+	originalCheckRedirect := client.CheckRedirect
 	var finalURL string
-	checkRedirectClient := &http.Client{
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			finalURL = req.URL.String()
-			// Allow up to 10 redirects
-			if len(via) >= 10 {
-				return fmt.Errorf("too many redirects")
-			}
-			return nil
-		},
-		Timeout: 30 * time.Second,
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		finalURL = req.URL.String()
+		// Allow up to 10 redirects
+		if len(via) >= 10 {
+			return fmt.Errorf("too many redirects")
+		}
+		return nil
 	}
+	defer func() { client.CheckRedirect = originalCheckRedirect }()
 
-	resp, err := checkRedirectClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		// If we got a final URL from redirects before the error, use it
 		if finalURL != "" && strings.Contains(finalURL, "/photo/") {
