@@ -1096,10 +1096,6 @@ func writeFavoriteVideosToFile(videoEntries []VideoEntry, outputName string, org
 				fmt.Printf("[*] Extracted %d photo URLs to '%s'\n", len(photos), photoOutputName)
 			}
 
-			// If no photos, still show total for backward compatibility
-			if len(photos) == 0 && len(videos) > 0 {
-				// Already printed above
-			}
 		}
 	} else {
 		// Flat structure - separate videos and photos
@@ -2245,9 +2241,10 @@ func generateCollectionIndex(collectionDir string, entries []VideoEntry, failure
 				var imageFiles []string
 				for _, match := range matches {
 					ext := strings.ToLower(filepath.Ext(match))
-					if ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".webp" {
+					switch ext {
+					case ".jpg", ".jpeg", ".png", ".webp":
 						imageFiles = append(imageFiles, filepath.Base(match))
-					} else if ext == ".m4a" || ext == ".mp3" {
+					case ".m4a", ".mp3":
 						enrichedEntries[i].AudioFile = filepath.Base(match)
 					}
 				}
