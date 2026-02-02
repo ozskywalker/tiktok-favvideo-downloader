@@ -18,7 +18,8 @@
       "WebFetch(domain:www.tiktok.com)",
       "Bash(go tool cover:*)",
       "Bash(ls:*)",
-      "Bash(./tiktok-favvideo-downloader.exe)"
+      "Bash(./tiktok-favvideo-downloader.exe)",
+      "Bash(git show:*)"
     ],
     "deny": [],
     "ask": []
