@@ -4216,3 +4216,318 @@ func TestOutputProcessing(t *testing.T) {
 		t.Error("Output should contain carriage returns for progress bar updates")
 	}
 }
+
+// ============================================================================
+// Photo Support Tests
+// ============================================================================
+
+// TestExtractVideoIDWithPhotoURL tests that extractVideoID works with photo URLs
+func TestExtractVideoIDWithPhotoURL(t *testing.T) {
+	tests := []struct {
+		name     string
+		url      string
+		expected string
+	}{
+		{
+			name:     "standard video URL",
+			url:      "https://www.tiktok.com/@user/video/7600559584901647646",
+			expected: "7600559584901647646",
+		},
+		{
+			name:     "photo URL",
+			url:      "https://www.tiktok.com/@user/photo/7597601281703693623",
+			expected: "7597601281703693623",
+		},
+		{
+			name:     "tiktokv share URL",
+			url:      "https://www.tiktokv.com/share/video/7597601281703693623/",
+			expected: "7597601281703693623",
+		},
+		{
+			name:     "mobile URL",
+			url:      "https://m.tiktok.com/v/7600559584901647646.html",
+			expected: "7600559584901647646",
+		},
+		{
+			name:     "invalid URL",
+			url:      "https://www.tiktok.com/@user",
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := extractVideoID(tt.url)
+			if result != tt.expected {
+				t.Errorf("extractVideoID(%q) = %q, want %q", tt.url, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestSeparateEntriesByContentType tests that entries are correctly separated
+func TestSeparateEntriesByContentType(t *testing.T) {
+	entries := []VideoEntry{
+		{Link: "https://www.tiktok.com/@user/video/1", ContentType: "video"},
+		{Link: "https://www.tiktok.com/@user/photo/2", ContentType: "photo"},
+		{Link: "https://www.tiktok.com/@user/video/3", ContentType: "video"},
+		{Link: "https://www.tiktok.com/@user/photo/4", ContentType: "photo"},
+		{Link: "https://www.tiktok.com/@user/video/5", ContentType: ""}, // empty defaults to video
+	}
+
+	videos, photos := separateEntriesByContentType(entries)
+
+	if len(videos) != 3 {
+		t.Errorf("expected 3 videos, got %d", len(videos))
+	}
+	if len(photos) != 2 {
+		t.Errorf("expected 2 photos, got %d", len(photos))
+	}
+
+	// Verify all photos have ContentType "photo"
+	for _, p := range photos {
+		if p.ContentType != "photo" {
+			t.Errorf("photo entry has wrong ContentType: %s", p.ContentType)
+		}
+	}
+}
+
+// TestGetVideoAndPhotoOutputFilenames tests the separate filename functions
+func TestGetVideoAndPhotoOutputFilenames(t *testing.T) {
+	// Test video filenames
+	if got := getVideoOutputFilename("favorites"); got != "fav_videos.txt" {
+		t.Errorf("getVideoOutputFilename(favorites) = %q, want %q", got, "fav_videos.txt")
+	}
+	if got := getVideoOutputFilename("liked"); got != "liked_videos.txt" {
+		t.Errorf("getVideoOutputFilename(liked) = %q, want %q", got, "liked_videos.txt")
+	}
+
+	// Test photo filenames
+	if got := getPhotoOutputFilename("favorites"); got != "fav_photos.txt" {
+		t.Errorf("getPhotoOutputFilename(favorites) = %q, want %q", got, "fav_photos.txt")
+	}
+	if got := getPhotoOutputFilename("liked"); got != "liked_photos.txt" {
+		t.Errorf("getPhotoOutputFilename(liked) = %q, want %q", got, "liked_photos.txt")
+	}
+}
+
+// TestCompareGalleryDlVersions tests version comparison for gallery-dl
+func TestCompareGalleryDlVersions(t *testing.T) {
+	tests := []struct {
+		local    string
+		remote   string
+		expected int
+	}{
+		{"1.28.0", "1.28.0", 0},  // equal
+		{"1.28.0", "1.28.1", -1}, // local older
+		{"1.28.1", "1.28.0", 1},  // local newer
+		{"1.27.5", "1.28.0", -1}, // local older (minor version)
+		{"2.0.0", "1.99.99", 1},  // local newer (major version)
+		{"1.28", "1.28.0", -1},   // local shorter
+		{"1.28.0", "1.28", 1},    // local longer
+	}
+
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("%s_vs_%s", tt.local, tt.remote), func(t *testing.T) {
+			result := compareGalleryDlVersions(tt.local, tt.remote)
+			if result != tt.expected {
+				t.Errorf("compareGalleryDlVersions(%q, %q) = %d, want %d",
+					tt.local, tt.remote, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestParseGalleryDlOutput tests parsing of gallery-dl output for success/failure
+func TestParseGalleryDlOutput(t *testing.T) {
+	entries := []VideoEntry{
+		{Link: "https://www.tiktok.com/@user/photo/7597601281703693623", VideoID: "7597601281703693623"},
+		{Link: "https://www.tiktok.com/@user/photo/7597601281703693624", VideoID: "7597601281703693624"},
+	}
+
+	tests := []struct {
+		name            string
+		lines           []string
+		expectedSuccess int
+		expectedFails   int
+	}{
+		{
+			name: "all success",
+			lines: []string{
+				"#1 https://www.tiktok.com/@user/photo/7597601281703693623",
+				"#2 https://www.tiktok.com/@user/photo/7597601281703693624",
+			},
+			expectedSuccess: 2,
+			expectedFails:   0,
+		},
+		{
+			name: "one failure",
+			lines: []string{
+				"#1 https://www.tiktok.com/@user/photo/7597601281703693623",
+				"ERROR: Unable to download 7597601281703693624: Not available",
+			},
+			expectedSuccess: 1,
+			expectedFails:   1,
+		},
+		{
+			name: "all failures",
+			lines: []string{
+				"[error] 7597601281703693623: failed to extract images",
+				"ERROR: 7597601281703693624: connection refused",
+			},
+			expectedSuccess: 0,
+			expectedFails:   2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			success, failures := parseGalleryDlOutput(tt.lines, entries)
+			if success != tt.expectedSuccess {
+				t.Errorf("expected %d successes, got %d", tt.expectedSuccess, success)
+			}
+			if len(failures) != tt.expectedFails {
+				t.Errorf("expected %d failures, got %d", tt.expectedFails, len(failures))
+			}
+		})
+	}
+}
+
+// TestCalculateSessionTotalsWithPhotos tests that session totals include photo stats
+func TestCalculateSessionTotalsWithPhotos(t *testing.T) {
+	collections := []CollectionResult{
+		{
+			Name:        "favorites-videos",
+			ContentType: "video",
+			Attempted:   100,
+			Success:     90,
+			Failed:      10,
+			Skipped:     5,
+		},
+		{
+			Name:        "favorites-photos",
+			ContentType: "photo",
+			Attempted:   20,
+			Success:     18,
+			Failed:      2,
+			Skipped:     0,
+		},
+		{
+			Name:        "liked-videos",
+			ContentType: "video",
+			Attempted:   50,
+			Success:     45,
+			Failed:      5,
+			Skipped:     2,
+		},
+	}
+
+	attempted, success, failed, skipped, photosAttempted, photosSuccess, photosFailed :=
+		calculateSessionTotals(collections)
+
+	if attempted != 170 {
+		t.Errorf("expected total attempted 170, got %d", attempted)
+	}
+	if success != 153 {
+		t.Errorf("expected total success 153, got %d", success)
+	}
+	if failed != 17 {
+		t.Errorf("expected total failed 17, got %d", failed)
+	}
+	if skipped != 7 {
+		t.Errorf("expected total skipped 7, got %d", skipped)
+	}
+	if photosAttempted != 20 {
+		t.Errorf("expected photos attempted 20, got %d", photosAttempted)
+	}
+	if photosSuccess != 18 {
+		t.Errorf("expected photos success 18, got %d", photosSuccess)
+	}
+	if photosFailed != 2 {
+		t.Errorf("expected photos failed 2, got %d", photosFailed)
+	}
+}
+
+// TestCollectionResultContentType tests that ContentType is properly tracked
+func TestCollectionResultContentType(t *testing.T) {
+	result := &CollectionResult{
+		Name:        "favorites",
+		ContentType: "photo",
+		Attempted:   10,
+		Success:     8,
+		Failed:      2,
+	}
+
+	if result.ContentType != "photo" {
+		t.Errorf("expected ContentType 'photo', got %q", result.ContentType)
+	}
+}
+
+// TestVideoEntryPhotoFields tests that VideoEntry has photo-specific fields
+func TestVideoEntryPhotoFields(t *testing.T) {
+	entry := VideoEntry{
+		Link:        "https://www.tiktok.com/@user/photo/123",
+		ContentType: "photo",
+		ImageCount:  5,
+		ImageFiles:  []string{"img1.jpg", "img2.jpg", "img3.jpg", "img4.jpg", "img5.jpg"},
+		AudioFile:   "audio.m4a",
+	}
+
+	if entry.ContentType != "photo" {
+		t.Errorf("expected ContentType 'photo', got %q", entry.ContentType)
+	}
+	if entry.ImageCount != 5 {
+		t.Errorf("expected ImageCount 5, got %d", entry.ImageCount)
+	}
+	if len(entry.ImageFiles) != 5 {
+		t.Errorf("expected 5 image files, got %d", len(entry.ImageFiles))
+	}
+	if entry.AudioFile != "audio.m4a" {
+		t.Errorf("expected AudioFile 'audio.m4a', got %q", entry.AudioFile)
+	}
+}
+
+// TestWriteFavoriteVideosToFileWithPhotos tests that photos are written to separate files
+func TestWriteFavoriteVideosToFileWithPhotos(t *testing.T) {
+	// Create temp directory
+	tempDir, err := os.MkdirTemp("", "photo_test_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tempDir) }()
+
+	// Create entries with mixed content types
+	entries := []VideoEntry{
+		{Link: "https://www.tiktok.com/@user/video/1", ContentType: "video", Collection: "favorites"},
+		{Link: "https://www.tiktok.com/@user/photo/2", ContentType: "photo", Collection: "favorites"},
+		{Link: "https://www.tiktok.com/@user/video/3", ContentType: "video", Collection: "favorites"},
+	}
+
+	// Test flat structure
+	outputName := filepath.Join(tempDir, "fav_videos.txt")
+	err = writeFavoriteVideosToFile(entries, outputName, false)
+	if err != nil {
+		t.Fatalf("writeFavoriteVideosToFile failed: %v", err)
+	}
+
+	// Check video file
+	videoContent, err := os.ReadFile(outputName)
+	if err != nil {
+		t.Fatalf("failed to read video file: %v", err)
+	}
+	videoLines := strings.Split(strings.TrimSpace(string(videoContent)), "\n")
+	if len(videoLines) != 2 {
+		t.Errorf("expected 2 video URLs, got %d", len(videoLines))
+	}
+
+	// Check photo file
+	photoFile := filepath.Join(tempDir, "fav_photos.txt")
+	photoContent, err := os.ReadFile(photoFile)
+	if err != nil {
+		t.Fatalf("failed to read photo file: %v", err)
+	}
+	photoLines := strings.Split(strings.TrimSpace(string(photoContent)), "\n")
+	if len(photoLines) != 1 {
+		t.Errorf("expected 1 photo URL, got %d", len(photoLines))
+	}
+}
