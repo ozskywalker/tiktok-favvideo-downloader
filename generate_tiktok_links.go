@@ -224,7 +224,8 @@ func isFileOlderThan30Days(path string) (bool, error) {
 
 // getYtdlpVersion runs yt-dlp --version and returns the version string (e.g., "2026.01.29")
 func getYtdlpVersion(exePath string) (string, error) {
-	cmd := exec.Command(exePath, "--version")
+	// Use explicit relative path for Go 1.19+ security (cannot run executables from current dir without ./)
+	cmd := exec.Command("."+string(filepath.Separator)+exePath, "--version")
 	output, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to run %s --version: %v", exePath, err)
@@ -293,7 +294,8 @@ func compareVersions(local, remote string) int {
 // updateYtdlp runs yt-dlp --update to self-update the binary
 func updateYtdlp(exePath string) error {
 	fmt.Println("[*] Running yt-dlp --update...")
-	cmd := exec.Command(exePath, "--update")
+	// Use explicit relative path for Go 1.19+ security
+	cmd := exec.Command("."+string(filepath.Separator)+exePath, "--update")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
@@ -464,7 +466,8 @@ func getOrDownloadYtdlp(client *http.Client, exeName string) error {
 
 // getGalleryDlVersion runs gallery-dl --version and returns the version string
 func getGalleryDlVersion(exePath string) (string, error) {
-	cmd := exec.Command(exePath, "--version")
+	// Use explicit relative path for Go 1.19+ security
+	cmd := exec.Command("."+string(filepath.Separator)+exePath, "--version")
 	output, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to run %s --version: %v", exePath, err)
@@ -780,22 +783,21 @@ func isPhotoPost(originalURL string, client *http.Client) (bool, string, error) 
 	// Set a user agent to avoid blocks
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 
-	// Create a client that follows redirects (default behavior)
-	// Use a client with redirect following to get the final URL
+	// Use the injected client but configure redirect handling to capture the final URL
+	// Save original redirect policy and restore after
+	originalCheckRedirect := client.CheckRedirect
 	var finalURL string
-	checkRedirectClient := &http.Client{
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			finalURL = req.URL.String()
-			// Allow up to 10 redirects
-			if len(via) >= 10 {
-				return fmt.Errorf("too many redirects")
-			}
-			return nil
-		},
-		Timeout: 30 * time.Second,
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		finalURL = req.URL.String()
+		// Allow up to 10 redirects
+		if len(via) >= 10 {
+			return fmt.Errorf("too many redirects")
+		}
+		return nil
 	}
+	defer func() { client.CheckRedirect = originalCheckRedirect }()
 
-	resp, err := checkRedirectClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		// If we got a final URL from redirects before the error, use it
 		if finalURL != "" && strings.Contains(finalURL, "/photo/") {
