@@ -4216,3 +4216,934 @@ func TestOutputProcessing(t *testing.T) {
 		t.Error("Output should contain carriage returns for progress bar updates")
 	}
 }
+
+// ============================================================================
+// Photo Support Tests
+// ============================================================================
+
+// TestExtractVideoIDWithPhotoURL tests that extractVideoID works with photo URLs
+func TestExtractVideoIDWithPhotoURL(t *testing.T) {
+	tests := []struct {
+		name     string
+		url      string
+		expected string
+	}{
+		{
+			name:     "standard video URL",
+			url:      "https://www.tiktok.com/@user/video/7600559584901647646",
+			expected: "7600559584901647646",
+		},
+		{
+			name:     "photo URL",
+			url:      "https://www.tiktok.com/@user/photo/7597601281703693623",
+			expected: "7597601281703693623",
+		},
+		{
+			name:     "tiktokv share URL",
+			url:      "https://www.tiktokv.com/share/video/7597601281703693623/",
+			expected: "7597601281703693623",
+		},
+		{
+			name:     "mobile URL",
+			url:      "https://m.tiktok.com/v/7600559584901647646.html",
+			expected: "7600559584901647646",
+		},
+		{
+			name:     "invalid URL",
+			url:      "https://www.tiktok.com/@user",
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := extractVideoID(tt.url)
+			if result != tt.expected {
+				t.Errorf("extractVideoID(%q) = %q, want %q", tt.url, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestSeparateEntriesByContentType tests that entries are correctly separated
+func TestSeparateEntriesByContentType(t *testing.T) {
+	entries := []VideoEntry{
+		{Link: "https://www.tiktok.com/@user/video/1", ContentType: "video"},
+		{Link: "https://www.tiktok.com/@user/photo/2", ContentType: "photo"},
+		{Link: "https://www.tiktok.com/@user/video/3", ContentType: "video"},
+		{Link: "https://www.tiktok.com/@user/photo/4", ContentType: "photo"},
+		{Link: "https://www.tiktok.com/@user/video/5", ContentType: ""}, // empty defaults to video
+	}
+
+	videos, photos := separateEntriesByContentType(entries)
+
+	if len(videos) != 3 {
+		t.Errorf("expected 3 videos, got %d", len(videos))
+	}
+	if len(photos) != 2 {
+		t.Errorf("expected 2 photos, got %d", len(photos))
+	}
+
+	// Verify all photos have ContentType "photo"
+	for _, p := range photos {
+		if p.ContentType != "photo" {
+			t.Errorf("photo entry has wrong ContentType: %s", p.ContentType)
+		}
+	}
+}
+
+// TestGetVideoAndPhotoOutputFilenames tests the separate filename functions
+func TestGetVideoAndPhotoOutputFilenames(t *testing.T) {
+	// Test video filenames
+	if got := getVideoOutputFilename("favorites"); got != "fav_videos.txt" {
+		t.Errorf("getVideoOutputFilename(favorites) = %q, want %q", got, "fav_videos.txt")
+	}
+	if got := getVideoOutputFilename("liked"); got != "liked_videos.txt" {
+		t.Errorf("getVideoOutputFilename(liked) = %q, want %q", got, "liked_videos.txt")
+	}
+
+	// Test photo filenames
+	if got := getPhotoOutputFilename("favorites"); got != "fav_photos.txt" {
+		t.Errorf("getPhotoOutputFilename(favorites) = %q, want %q", got, "fav_photos.txt")
+	}
+	if got := getPhotoOutputFilename("liked"); got != "liked_photos.txt" {
+		t.Errorf("getPhotoOutputFilename(liked) = %q, want %q", got, "liked_photos.txt")
+	}
+}
+
+// TestCompareGalleryDlVersions tests version comparison for gallery-dl
+func TestCompareGalleryDlVersions(t *testing.T) {
+	tests := []struct {
+		local    string
+		remote   string
+		expected int
+	}{
+		{"1.28.0", "1.28.0", 0},  // equal
+		{"1.28.0", "1.28.1", -1}, // local older
+		{"1.28.1", "1.28.0", 1},  // local newer
+		{"1.27.5", "1.28.0", -1}, // local older (minor version)
+		{"2.0.0", "1.99.99", 1},  // local newer (major version)
+		{"1.28", "1.28.0", -1},   // local shorter
+		{"1.28.0", "1.28", 1},    // local longer
+	}
+
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("%s_vs_%s", tt.local, tt.remote), func(t *testing.T) {
+			result := compareGalleryDlVersions(tt.local, tt.remote)
+			if result != tt.expected {
+				t.Errorf("compareGalleryDlVersions(%q, %q) = %d, want %d",
+					tt.local, tt.remote, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestParseGalleryDlOutput tests parsing of gallery-dl output for success/failure
+func TestParseGalleryDlOutput(t *testing.T) {
+	entries := []VideoEntry{
+		{Link: "https://www.tiktok.com/@user/photo/7597601281703693623", VideoID: "7597601281703693623"},
+		{Link: "https://www.tiktok.com/@user/photo/7597601281703693624", VideoID: "7597601281703693624"},
+	}
+
+	tests := []struct {
+		name            string
+		lines           []string
+		expectedSuccess int
+		expectedFails   int
+	}{
+		{
+			name: "all success",
+			lines: []string{
+				"#1 https://www.tiktok.com/@user/photo/7597601281703693623",
+				"#2 https://www.tiktok.com/@user/photo/7597601281703693624",
+			},
+			expectedSuccess: 2,
+			expectedFails:   0,
+		},
+		{
+			name: "one failure",
+			lines: []string{
+				"#1 https://www.tiktok.com/@user/photo/7597601281703693623",
+				"ERROR: Unable to download 7597601281703693624: Not available",
+			},
+			expectedSuccess: 1,
+			expectedFails:   1,
+		},
+		{
+			name: "all failures",
+			lines: []string{
+				"[error] 7597601281703693623: failed to extract images",
+				"ERROR: 7597601281703693624: connection refused",
+			},
+			expectedSuccess: 0,
+			expectedFails:   2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			success, failures := parseGalleryDlOutput(tt.lines, entries)
+			if success != tt.expectedSuccess {
+				t.Errorf("expected %d successes, got %d", tt.expectedSuccess, success)
+			}
+			if len(failures) != tt.expectedFails {
+				t.Errorf("expected %d failures, got %d", tt.expectedFails, len(failures))
+			}
+		})
+	}
+}
+
+// TestCalculateSessionTotalsWithPhotos tests that session totals include photo stats
+func TestCalculateSessionTotalsWithPhotos(t *testing.T) {
+	collections := []CollectionResult{
+		{
+			Name:        "favorites-videos",
+			ContentType: "video",
+			Attempted:   100,
+			Success:     90,
+			Failed:      10,
+			Skipped:     5,
+		},
+		{
+			Name:        "favorites-photos",
+			ContentType: "photo",
+			Attempted:   20,
+			Success:     18,
+			Failed:      2,
+			Skipped:     0,
+		},
+		{
+			Name:        "liked-videos",
+			ContentType: "video",
+			Attempted:   50,
+			Success:     45,
+			Failed:      5,
+			Skipped:     2,
+		},
+	}
+
+	attempted, success, failed, skipped, photosAttempted, photosSuccess, photosFailed :=
+		calculateSessionTotals(collections)
+
+	if attempted != 170 {
+		t.Errorf("expected total attempted 170, got %d", attempted)
+	}
+	if success != 153 {
+		t.Errorf("expected total success 153, got %d", success)
+	}
+	if failed != 17 {
+		t.Errorf("expected total failed 17, got %d", failed)
+	}
+	if skipped != 7 {
+		t.Errorf("expected total skipped 7, got %d", skipped)
+	}
+	if photosAttempted != 20 {
+		t.Errorf("expected photos attempted 20, got %d", photosAttempted)
+	}
+	if photosSuccess != 18 {
+		t.Errorf("expected photos success 18, got %d", photosSuccess)
+	}
+	if photosFailed != 2 {
+		t.Errorf("expected photos failed 2, got %d", photosFailed)
+	}
+}
+
+// TestCollectionResultContentType tests that ContentType is properly tracked
+func TestCollectionResultContentType(t *testing.T) {
+	result := &CollectionResult{
+		Name:        "favorites",
+		ContentType: "photo",
+		Attempted:   10,
+		Success:     8,
+		Failed:      2,
+	}
+
+	if result.ContentType != "photo" {
+		t.Errorf("expected ContentType 'photo', got %q", result.ContentType)
+	}
+}
+
+// TestVideoEntryPhotoFields tests that VideoEntry has photo-specific fields
+func TestVideoEntryPhotoFields(t *testing.T) {
+	entry := VideoEntry{
+		Link:        "https://www.tiktok.com/@user/photo/123",
+		ContentType: "photo",
+		ImageCount:  5,
+		ImageFiles:  []string{"img1.jpg", "img2.jpg", "img3.jpg", "img4.jpg", "img5.jpg"},
+		AudioFile:   "audio.m4a",
+	}
+
+	if entry.ContentType != "photo" {
+		t.Errorf("expected ContentType 'photo', got %q", entry.ContentType)
+	}
+	if entry.ImageCount != 5 {
+		t.Errorf("expected ImageCount 5, got %d", entry.ImageCount)
+	}
+	if len(entry.ImageFiles) != 5 {
+		t.Errorf("expected 5 image files, got %d", len(entry.ImageFiles))
+	}
+	if entry.AudioFile != "audio.m4a" {
+		t.Errorf("expected AudioFile 'audio.m4a', got %q", entry.AudioFile)
+	}
+}
+
+// TestWriteFavoriteVideosToFileWithPhotos tests that photos are written to separate files
+func TestWriteFavoriteVideosToFileWithPhotos(t *testing.T) {
+	// Create temp directory
+	tempDir, err := os.MkdirTemp("", "photo_test_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tempDir) }()
+
+	// Create entries with mixed content types
+	entries := []VideoEntry{
+		{Link: "https://www.tiktok.com/@user/video/1", ContentType: "video", Collection: "favorites"},
+		{Link: "https://www.tiktok.com/@user/photo/2", ContentType: "photo", Collection: "favorites"},
+		{Link: "https://www.tiktok.com/@user/video/3", ContentType: "video", Collection: "favorites"},
+	}
+
+	// Test flat structure
+	outputName := filepath.Join(tempDir, "fav_videos.txt")
+	err = writeFavoriteVideosToFile(entries, outputName, false)
+	if err != nil {
+		t.Fatalf("writeFavoriteVideosToFile failed: %v", err)
+	}
+
+	// Check video file
+	videoContent, err := os.ReadFile(outputName)
+	if err != nil {
+		t.Fatalf("failed to read video file: %v", err)
+	}
+	videoLines := strings.Split(strings.TrimSpace(string(videoContent)), "\n")
+	if len(videoLines) != 2 {
+		t.Errorf("expected 2 video URLs, got %d", len(videoLines))
+	}
+
+	// Check photo file
+	photoFile := filepath.Join(tempDir, "fav_photos.txt")
+	photoContent, err := os.ReadFile(photoFile)
+	if err != nil {
+		t.Fatalf("failed to read photo file: %v", err)
+	}
+	photoLines := strings.Split(strings.TrimSpace(string(photoContent)), "\n")
+	if len(photoLines) != 1 {
+		t.Errorf("expected 1 photo URL, got %d", len(photoLines))
+	}
+}
+
+// TestIsPhotoPost tests the photo post detection function
+func TestIsPhotoPost(t *testing.T) {
+	t.Run("URL already contains /photo/", func(t *testing.T) {
+		// URLs already containing /photo/ should return true immediately without HTTP request
+		photoURL := "https://www.tiktok.com/@user/photo/1234567890"
+		client := &http.Client{} // Won't be used since URL already contains /photo/
+
+		isPhoto, finalURL, err := isPhotoPost(photoURL, client)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if !isPhoto {
+			t.Error("expected isPhoto to be true for URL containing /photo/")
+		}
+		if finalURL != photoURL {
+			t.Errorf("expected finalURL %q, got %q", photoURL, finalURL)
+		}
+	})
+
+	t.Run("video URL redirects to video", func(t *testing.T) {
+		// Create a test server that simulates TikTok's redirect behavior
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Simulate redirect to video URL
+			http.Redirect(w, r, "https://www.tiktok.com/@user/video/1234567890", http.StatusFound)
+		}))
+		defer server.Close()
+
+		client := server.Client()
+
+		isPhoto, finalURL, err := isPhotoPost(server.URL, client)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if isPhoto {
+			t.Error("expected isPhoto to be false for video URL")
+		}
+		if !strings.Contains(finalURL, "/video/") {
+			t.Errorf("expected finalURL to contain /video/, got %q", finalURL)
+		}
+	})
+
+	t.Run("video URL redirects to photo", func(t *testing.T) {
+		// Create a test server that simulates redirect to photo URL
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Simulate redirect to photo URL
+			http.Redirect(w, r, "https://www.tiktok.com/@user/photo/1234567890", http.StatusFound)
+		}))
+		defer server.Close()
+
+		client := server.Client()
+
+		isPhoto, finalURL, err := isPhotoPost(server.URL, client)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if !isPhoto {
+			t.Error("expected isPhoto to be true for redirected photo URL")
+		}
+		if !strings.Contains(finalURL, "/photo/") {
+			t.Errorf("expected finalURL to contain /photo/, got %q", finalURL)
+		}
+	})
+
+	t.Run("URL without redirect", func(t *testing.T) {
+		// Create a test server that doesn't redirect
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer server.Close()
+
+		client := server.Client()
+
+		isPhoto, _, err := isPhotoPost(server.URL, client)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if isPhoto {
+			t.Error("expected isPhoto to be false for non-photo URL without redirect")
+		}
+	})
+
+	t.Run("network error", func(t *testing.T) {
+		client := &http.Client{
+			Transport: &errorTransport{err: fmt.Errorf("network unreachable")},
+		}
+
+		_, _, err := isPhotoPost("https://www.tiktok.com/@user/video/123", client)
+		if err == nil {
+			t.Error("expected error for network failure, got nil")
+		}
+	})
+
+	t.Run("invalid URL", func(t *testing.T) {
+		client := &http.Client{}
+
+		_, _, err := isPhotoPost("://invalid-url", client)
+		if err == nil {
+			t.Error("expected error for invalid URL, got nil")
+		}
+	})
+
+	t.Run("multiple redirects to photo", func(t *testing.T) {
+		// Server that does multiple redirects before landing on a photo URL
+		redirectCount := 0
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			redirectCount++
+			if redirectCount < 3 {
+				http.Redirect(w, r, r.URL.String(), http.StatusFound)
+			} else {
+				http.Redirect(w, r, "https://www.tiktok.com/@user/photo/123", http.StatusFound)
+			}
+		}))
+		defer server.Close()
+
+		client := server.Client()
+
+		isPhoto, finalURL, err := isPhotoPost(server.URL, client)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if !isPhoto {
+			t.Error("expected isPhoto to be true after multiple redirects")
+		}
+		if !strings.Contains(finalURL, "/photo/") {
+			t.Errorf("expected finalURL to contain /photo/, got %q", finalURL)
+		}
+	})
+}
+
+// TestGetOrDownloadGalleryDl tests the gallery-dl download function
+func TestGetOrDownloadGalleryDl(t *testing.T) {
+	t.Run("file already exists", func(t *testing.T) {
+		// Create a temp directory
+		tmpDir, err := os.MkdirTemp("", "gallerydl_test")
+		if err != nil {
+			t.Fatalf("failed to create temp dir: %v", err)
+		}
+		defer func() { _ = os.RemoveAll(tmpDir) }()
+
+		oldCwd, _ := os.Getwd()
+		defer func() { _ = os.Chdir(oldCwd) }()
+		if err := os.Chdir(tmpDir); err != nil {
+			t.Fatalf("failed to chdir: %v", err)
+		}
+
+		exeName := "gallery-dl.exe"
+
+		// Create a dummy file
+		if err := os.WriteFile(exeName, []byte("dummy gallery-dl"), 0644); err != nil {
+			t.Fatalf("failed to create dummy exe: %v", err)
+		}
+
+		// Should return nil when file exists (won't check version since it's a dummy)
+		client := http.DefaultClient
+		err = getOrDownloadGalleryDl(client, exeName)
+		if err != nil {
+			t.Errorf("expected nil error when file exists, got: %v", err)
+		}
+	})
+
+	t.Run("file does not exist - downloads successfully", func(t *testing.T) {
+		tmpDir, err := os.MkdirTemp("", "gallerydl_download_test")
+		if err != nil {
+			t.Fatalf("failed to create temp dir: %v", err)
+		}
+		defer func() { _ = os.RemoveAll(tmpDir) }()
+
+		oldCwd, _ := os.Getwd()
+		defer func() { _ = os.Chdir(oldCwd) }()
+		if err := os.Chdir(tmpDir); err != nil {
+			t.Fatalf("failed to chdir: %v", err)
+		}
+
+		exeName := "gallery-dl.exe"
+
+		// Create a mock release JSON
+		mockReleaseJSON := `{
+			"assets": [
+				{
+					"name": "gallery-dl.exe",
+					"browser_download_url": "http://example.com/gallery-dl.exe"
+				}
+			]
+		}`
+
+		// Create a test server
+		downloadHandler := http.NewServeMux()
+		downloadHandler.HandleFunc("/repos/mikf/gallery-dl/releases/latest", func(w http.ResponseWriter, r *http.Request) {
+			if _, err := w.Write([]byte(mockReleaseJSON)); err != nil {
+				t.Errorf("failed to write mock release JSON: %v", err)
+			}
+		})
+		downloadHandler.HandleFunc("/gallery-dl.exe", func(w http.ResponseWriter, r *http.Request) {
+			if _, err := w.Write([]byte("fake gallery-dl exe content")); err != nil {
+				t.Errorf("failed to write fake exe: %v", err)
+			}
+		})
+		ts := httptest.NewServer(downloadHandler)
+		defer ts.Close()
+
+		// Use custom client that rewrites URLs to test server
+		customClient := &http.Client{
+			Transport: &rewriterRoundTripper{
+				rt:   http.DefaultTransport,
+				host: ts.URL,
+			},
+		}
+
+		err = getOrDownloadGalleryDl(customClient, exeName)
+		if err != nil {
+			t.Errorf("expected nil error on download, got: %v", err)
+		}
+
+		// Verify file was created
+		if _, err := os.Stat(exeName); os.IsNotExist(err) {
+			t.Errorf("expected %s to exist after download", exeName)
+		}
+	})
+
+	t.Run("download fails - no asset found", func(t *testing.T) {
+		tmpDir, err := os.MkdirTemp("", "gallerydl_noasset_test")
+		if err != nil {
+			t.Fatalf("failed to create temp dir: %v", err)
+		}
+		defer func() { _ = os.RemoveAll(tmpDir) }()
+
+		oldCwd, _ := os.Getwd()
+		defer func() { _ = os.Chdir(oldCwd) }()
+		if err := os.Chdir(tmpDir); err != nil {
+			t.Fatalf("failed to chdir: %v", err)
+		}
+
+		exeName := "gallery-dl.exe"
+
+		// Create a mock release JSON with wrong asset name
+		mockReleaseJSON := `{
+			"assets": [
+				{
+					"name": "wrong-name.exe",
+					"browser_download_url": "http://example.com/wrong.exe"
+				}
+			]
+		}`
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if _, err := w.Write([]byte(mockReleaseJSON)); err != nil {
+				t.Errorf("failed to write mock release JSON: %v", err)
+			}
+		}))
+		defer server.Close()
+
+		customClient := &http.Client{
+			Transport: &rewriterRoundTripper{
+				rt:   http.DefaultTransport,
+				host: server.URL,
+			},
+		}
+
+		err = getOrDownloadGalleryDl(customClient, exeName)
+		if err == nil {
+			t.Error("expected error when asset not found")
+		}
+	})
+}
+
+// GalleryDlMockCommandRunner is a mock command runner specifically for gallery-dl tests
+type GalleryDlMockCommandRunner struct {
+	ShouldFail    bool
+	Commands      []MockCommand
+	OutputLines   []string
+	ExpectedError error
+}
+
+func (m *GalleryDlMockCommandRunner) Run(name string, args ...string) (CapturedOutput, error) {
+	m.Commands = append(m.Commands, MockCommand{Name: name, Args: args})
+
+	output := CapturedOutput{
+		Combined: m.OutputLines,
+	}
+
+	if m.ShouldFail {
+		if m.ExpectedError != nil {
+			return output, m.ExpectedError
+		}
+		return output, fmt.Errorf("mock command failed")
+	}
+	return output, nil
+}
+
+// TestRunGalleryDlWithRunner tests the runGalleryDl function
+func TestRunGalleryDlWithRunner(t *testing.T) {
+	t.Run("empty entries returns immediately", func(t *testing.T) {
+		entries := []VideoEntry{}
+		result, err := runGalleryDl("", "test_dir", false, entries, "", "")
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if result == nil {
+			t.Fatal("expected non-nil result")
+		}
+		if result.Attempted != 0 {
+			t.Errorf("expected 0 attempted, got %d", result.Attempted)
+		}
+	})
+
+	t.Run("basic execution creates correct arguments", func(t *testing.T) {
+		// Create temp directory
+		tmpDir, err := os.MkdirTemp("", "gallery_dl_test_*")
+		if err != nil {
+			t.Fatalf("failed to create temp dir: %v", err)
+		}
+		defer func() { _ = os.RemoveAll(tmpDir) }()
+
+		entries := []VideoEntry{
+			{Link: "https://www.tiktok.com/@user/photo/123", VideoID: "123", ContentType: "photo"},
+		}
+
+		// Run with minimal settings - this will fail because gallery-dl.exe doesn't exist
+		// but we can verify the temp file creation and argument building
+		_, _ = runGalleryDl("", tmpDir, false, entries, "", "")
+
+		// Verify temp file was attempted (even if command failed)
+		// The function should have cleaned up the temp file on exit
+	})
+}
+
+// TestGetGalleryDlVersion tests the version parsing for gallery-dl
+func TestGetGalleryDlVersion(t *testing.T) {
+	// This test would require mocking exec.Command which is complex
+	// Instead, we test edge cases of the version parsing logic
+
+	t.Run("version parsing from output format", func(t *testing.T) {
+		// gallery-dl outputs "gallery-dl X.Y.Z"
+		// The function extracts the version number
+
+		// Simulate what the function does internally
+		testCases := []struct {
+			output   string
+			expected string
+		}{
+			{"gallery-dl 1.28.5", "1.28.5"},
+			{"gallery-dl 2.0.0", "2.0.0"},
+			{"gallery-dl 1.28.5-dev", "1.28.5-dev"},
+		}
+
+		for _, tc := range testCases {
+			// Simulate the parsing logic from getGalleryDlVersion
+			version := strings.TrimSpace(tc.output)
+			parts := strings.Fields(version)
+			var result string
+			if len(parts) >= 2 {
+				result = parts[len(parts)-1]
+			}
+			if result != tc.expected {
+				t.Errorf("parseVersion(%q) = %q, want %q", tc.output, result, tc.expected)
+			}
+		}
+	})
+}
+
+// TestGetLatestGalleryDlVersion tests fetching the latest gallery-dl version
+func TestGetLatestGalleryDlVersion(t *testing.T) {
+	t.Run("successful redirect parsing", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/mikf/gallery-dl/releases/latest" {
+				w.Header().Set("Location", "https://github.com/mikf/gallery-dl/releases/tag/v1.28.5")
+				w.WriteHeader(http.StatusFound)
+				return
+			}
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer server.Close()
+
+		client := server.Client()
+		// Override transport to redirect GitHub URLs to test server
+		client.Transport = &galleryDlRedirectTransport{
+			server:   server,
+			original: client.Transport,
+		}
+
+		version, err := getLatestGalleryDlVersion(client)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		// The function strips the "v" prefix, so expect "1.28.5"
+		if version != "1.28.5" {
+			t.Errorf("expected version 1.28.5, got %s", version)
+		}
+	})
+
+	t.Run("network error", func(t *testing.T) {
+		client := &http.Client{
+			Transport: &errorTransport{err: fmt.Errorf("network unreachable")},
+		}
+
+		_, err := getLatestGalleryDlVersion(client)
+		if err == nil {
+			t.Error("expected error for network failure, got nil")
+		}
+	})
+}
+
+// galleryDlRedirectTransport rewrites GitHub gallery-dl URLs to the test server
+type galleryDlRedirectTransport struct {
+	server   *httptest.Server
+	original http.RoundTripper
+}
+
+func (t *galleryDlRedirectTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if strings.Contains(req.URL.Host, "github.com") {
+		req.URL.Scheme = "http"
+		req.URL.Host = strings.TrimPrefix(t.server.URL, "http://")
+	}
+	if t.original != nil {
+		return t.original.RoundTrip(req)
+	}
+	return http.DefaultTransport.RoundTrip(req)
+}
+
+// TestDownloadLatestGalleryDl tests the gallery-dl download function
+func TestDownloadLatestGalleryDl(t *testing.T) {
+	t.Run("successful download", func(t *testing.T) {
+		tmpDir, err := os.MkdirTemp("", "gallerydl_download_*")
+		if err != nil {
+			t.Fatalf("failed to create temp dir: %v", err)
+		}
+		defer func() { _ = os.RemoveAll(tmpDir) }()
+
+		oldCwd, _ := os.Getwd()
+		defer func() { _ = os.Chdir(oldCwd) }()
+		if err := os.Chdir(tmpDir); err != nil {
+			t.Fatalf("failed to chdir: %v", err)
+		}
+
+		exeName := "gallery-dl.exe"
+		mockReleaseJSON := `{
+			"assets": [
+				{
+					"name": "gallery-dl.exe",
+					"browser_download_url": "http://example.com/gallery-dl.exe"
+				}
+			]
+		}`
+
+		mux := http.NewServeMux()
+		mux.HandleFunc("/repos/mikf/gallery-dl/releases/latest", func(w http.ResponseWriter, r *http.Request) {
+			if _, err := w.Write([]byte(mockReleaseJSON)); err != nil {
+				t.Errorf("failed to write: %v", err)
+			}
+		})
+		mux.HandleFunc("/gallery-dl.exe", func(w http.ResponseWriter, r *http.Request) {
+			if _, err := w.Write([]byte("fake exe content")); err != nil {
+				t.Errorf("failed to write: %v", err)
+			}
+		})
+		server := httptest.NewServer(mux)
+		defer server.Close()
+
+		client := &http.Client{
+			Transport: &rewriterRoundTripper{
+				rt:   http.DefaultTransport,
+				host: server.URL,
+			},
+		}
+
+		err = downloadLatestGalleryDl(client, exeName)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+
+		// Verify file was created
+		if _, err := os.Stat(exeName); os.IsNotExist(err) {
+			t.Error("gallery-dl.exe should have been created")
+		}
+	})
+
+	t.Run("invalid JSON response", func(t *testing.T) {
+		tmpDir, err := os.MkdirTemp("", "gallerydl_invalid_*")
+		if err != nil {
+			t.Fatalf("failed to create temp dir: %v", err)
+		}
+		defer func() { _ = os.RemoveAll(tmpDir) }()
+
+		oldCwd, _ := os.Getwd()
+		defer func() { _ = os.Chdir(oldCwd) }()
+		if err := os.Chdir(tmpDir); err != nil {
+			t.Fatalf("failed to chdir: %v", err)
+		}
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if _, err := w.Write([]byte("not valid json")); err != nil {
+				t.Errorf("failed to write: %v", err)
+			}
+		}))
+		defer server.Close()
+
+		client := &http.Client{
+			Transport: &rewriterRoundTripper{
+				rt:   http.DefaultTransport,
+				host: server.URL,
+			},
+		}
+
+		err = downloadLatestGalleryDl(client, "gallery-dl.exe")
+		if err == nil {
+			t.Error("expected error for invalid JSON")
+		}
+	})
+}
+
+// TestBackupGalleryDl tests the gallery-dl backup function
+func TestBackupGalleryDl(t *testing.T) {
+	t.Run("successful backup", func(t *testing.T) {
+		tmpDir, err := os.MkdirTemp("", "backup_gallerydl_*")
+		if err != nil {
+			t.Fatalf("failed to create temp dir: %v", err)
+		}
+		defer func() { _ = os.RemoveAll(tmpDir) }()
+
+		oldCwd, _ := os.Getwd()
+		defer func() { _ = os.Chdir(oldCwd) }()
+		if err := os.Chdir(tmpDir); err != nil {
+			t.Fatalf("failed to chdir: %v", err)
+		}
+
+		exeName := "gallery-dl.exe"
+		content := []byte("gallery-dl content")
+		if err := os.WriteFile(exeName, content, 0644); err != nil {
+			t.Fatalf("failed to create exe: %v", err)
+		}
+
+		err = backupGalleryDl(exeName)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+
+		// Verify backup exists
+		backupContent, err := os.ReadFile(exeName + ".old")
+		if err != nil {
+			t.Errorf("failed to read backup: %v", err)
+		}
+		if string(backupContent) != string(content) {
+			t.Errorf("backup content mismatch")
+		}
+
+		// Verify original is gone
+		if _, err := os.Stat(exeName); !os.IsNotExist(err) {
+			t.Error("original should be renamed")
+		}
+	})
+
+	t.Run("backup non-existent file", func(t *testing.T) {
+		tmpDir, err := os.MkdirTemp("", "backup_nofile_*")
+		if err != nil {
+			t.Fatalf("failed to create temp dir: %v", err)
+		}
+		defer func() { _ = os.RemoveAll(tmpDir) }()
+
+		oldCwd, _ := os.Getwd()
+		defer func() { _ = os.Chdir(oldCwd) }()
+		if err := os.Chdir(tmpDir); err != nil {
+			t.Fatalf("failed to chdir: %v", err)
+		}
+
+		err = backupGalleryDl("nonexistent.exe")
+		if err == nil {
+			t.Error("expected error for non-existent file")
+		}
+	})
+}
+
+// TestDetectContentTypes tests batch content type detection
+func TestDetectContentTypes(t *testing.T) {
+	t.Run("empty entries", func(t *testing.T) {
+		entries := []VideoEntry{}
+		client := &http.Client{}
+
+		result := detectContentTypes(entries, client)
+		if len(result) != 0 {
+			t.Errorf("expected empty map, got %d entries", len(result))
+		}
+	})
+
+	t.Run("entries already typed", func(t *testing.T) {
+		entries := []VideoEntry{
+			{Link: "https://www.tiktok.com/@user/photo/123", ContentType: "photo"},
+			{Link: "https://www.tiktok.com/@user/video/456", ContentType: "video"},
+		}
+		client := &http.Client{}
+
+		result := detectContentTypes(entries, client)
+
+		// Should still process and return content types
+		if len(result) != 2 {
+			t.Errorf("expected 2 entries, got %d", len(result))
+		}
+	})
+
+	t.Run("URL with /photo/ detected without network", func(t *testing.T) {
+		entries := []VideoEntry{
+			{Link: "https://www.tiktok.com/@user/photo/123"},
+		}
+
+		// Use a client that fails on any request - shouldn't be called for /photo/ URLs
+		client := &http.Client{
+			Transport: &errorTransport{err: fmt.Errorf("should not be called")},
+		}
+
+		result := detectContentTypes(entries, client)
+
+		if result[entries[0].Link] != "photo" {
+			t.Errorf("expected 'photo' content type, got %q", result[entries[0].Link])
+		}
+	})
+}

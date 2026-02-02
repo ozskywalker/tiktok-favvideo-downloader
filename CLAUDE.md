@@ -2,12 +2,61 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Photo/Slideshow Support (New!)
+
+TikTok photo slideshows (carousels) are now supported alongside videos. The application automatically:
+
+1. **Detects photo posts** by checking URL redirects (photo URLs contain `/photo/` instead of `/video/`)
+2. **Downloads photos using gallery-dl** (auto-downloaded like yt-dlp if not present)
+3. **Downloads videos using yt-dlp** (existing behavior)
+4. **Generates unified indexes** that display both videos and photos
+
+### How Photo Detection Works
+- On startup, the app checks each URL from your TikTok export
+- URLs that redirect to `/photo/` paths are marked as photo posts
+- Photo URLs are routed to gallery-dl instead of yt-dlp
+- Detection adds a small delay (~100ms per URL) to avoid rate limiting
+
+### What Gets Downloaded
+- **Videos**: MP4 files + thumbnails + metadata (via yt-dlp)
+- **Photos**: All images in the slideshow (JPG/PNG/WebP) + audio track (M4A) + metadata (via gallery-dl)
+
+### gallery-dl Management
+- Automatically downloaded from GitHub if not present
+- Version checked against latest release (same as yt-dlp)
+- Update prompts shown when newer version available
+
+### Separate URL Files
+When photo posts are detected:
+- `fav_videos.txt` / `liked_videos.txt` - Video URLs for yt-dlp
+- `fav_photos.txt` / `liked_photos.txt` - Photo URLs for gallery-dl
+
+### Progress Reporting with Photos
+Session summaries now show separate stats:
+```
+Videos Attempted: 92
+  ✓ Successfully Downloaded: 87
+  - Skipped (Already Downloaded): 3
+  ✗ Failed: 2
+
+Photos Attempted: 15
+  ✓ Successfully Downloaded: 14
+  ✗ Failed: 1
+```
+
+### Limitations
+- Photo detection requires network requests (adds startup time)
+- gallery-dl is a separate ~10MB download
+- Photo metadata format differs slightly from video metadata
+
+---
+
 ## Collection Organization Feature
 
 ### Default Behavior
-By default, the application organizes downloaded videos into collection-based subdirectories:
-- `favorites/` - Contains favorited videos with their URL list file
-- `liked/` - Contains liked videos with their URL list file
+By default, the application organizes downloaded content into collection-based subdirectories:
+- `favorites/` - Contains favorited videos/photos with their URL list files
+- `liked/` - Contains liked videos/photos with their URL list files
 
 ### Usage Examples
 ```bash
@@ -157,39 +206,54 @@ This is useful for:
 ```
 project-folder/
 ├── tiktok-favvideo-downloader.exe
+├── yt-dlp.exe                                       # Auto-downloaded for video downloads
+├── gallery-dl.exe                                   # Auto-downloaded for photo downloads
 ├── user_data_tiktok.json
 │
-├── favorites/                                        # Favorited videos collection
-│   ├── fav_videos.txt                               # URL list (yt-dlp compatible)
+├── favorites/                                        # Favorited content collection
+│   ├── fav_videos.txt                               # Video URL list (yt-dlp)
+│   ├── fav_photos.txt                               # Photo URL list (gallery-dl)
 │   ├── download_archive.txt                         # Resume tracking (skips downloaded videos)
 │   ├── index.json                                   # Machine-readable metadata index
 │   ├── index.html                                   # Visual browser (open in Chrome)
+│   │
+│   │ # Video files (from yt-dlp):
 │   ├── 20260129_7600559584901647646_Funny_Cat.mp4   # Video file
 │   ├── 20260129_7600559584901647646_Funny_Cat.info.json  # yt-dlp metadata
 │   ├── 20260129_7600559584901647646_Funny_Cat.jpg   # Thumbnail
+│   │
+│   │ # Photo slideshow files (from gallery-dl):
+│   ├── 20260129_7597601281703693623_Slideshow_1.jpg # First image
+│   ├── 20260129_7597601281703693623_Slideshow_2.jpg # Second image
+│   ├── 20260129_7597601281703693623_Slideshow.m4a   # Audio track
+│   ├── 20260129_7597601281703693623_Slideshow.json  # gallery-dl metadata
 │   └── ...
 │
-└── liked/                                           # Liked videos collection (if opted in)
+└── liked/                                           # Liked content collection (if opted in)
     ├── liked_videos.txt                             # Note: different filename for liked
+    ├── liked_photos.txt                             # Photo URLs for liked collection
     ├── download_archive.txt                         # Resume tracking for liked videos
     ├── index.json
     ├── index.html
     └── ...
 ```
 
-### Video Metadata & Indexing Feature
+### Video & Photo Metadata & Indexing Feature
 
-After downloading videos, the application generates:
+After downloading content, the application generates:
 
 1. **`index.html`** - Visual browser with:
-   - Thumbnail grid view
+   - Thumbnail grid view (uses first image for photo slideshows)
    - Search by title, creator, or description
    - Filter by download status (All/Downloaded/Failed)
    - Click-to-play video modal
+   - Photo slideshow viewer for multi-image posts
    - Dark theme, works offline
 
 2. **`index.json`** - Machine-readable index with:
    - Video metadata (title, creator, duration, views, etc.)
+   - Photo metadata (image count, image files, audio file)
+   - Content type indicator ("video" or "photo")
    - Favorited dates from TikTok export
    - Download status and local filenames
    - Original TikTok URLs
@@ -349,10 +413,10 @@ go mod tidy
 ## Architecture
 
 ### Project Structure
-This is a single-package Go application (`package main`) that downloads TikTok favorite/liked videos using yt-dlp. The main components are:
+This is a single-package Go application (`package main`) that downloads TikTok favorite/liked videos and photos using yt-dlp and gallery-dl. The main components are:
 
 - **Main executable**: `generate_tiktok_links.go` - Core application logic
-- **Tests**: `generate_tiktok_links_test.go` - Comprehensive test suite with 64.7% coverage
+- **Tests**: `generate_tiktok_links_test.go` - Comprehensive test suite
 - **Templates**: `templates/index.html` - Embedded HTML template for visual browser (via `//go:embed`)
 - **No external dependencies**: Pure Go standard library implementation (uses `embed` package)
 
@@ -361,16 +425,21 @@ This is a single-package Go application (`package main`) that downloads TikTok f
 1. **JSON Data Parsing**: Parses TikTok's `user_data_tiktok.json` export file
    - `Data` struct defines the expected JSON structure
    - `parseFavoriteVideosFromFile()` extracts video entries with collection metadata
-   - `VideoEntry` struct contains Link, Date, Collection, and extended metadata fields
+   - `VideoEntry` struct contains Link, Date, Collection, ContentType, and extended metadata fields
 
-2. **Collection Organization**: Organizes videos by collection type (enabled by default)
+2. **Content Type Detection**: Detects whether URLs are videos or photos
+   - `isPhotoPost()` follows URL redirects to detect `/photo/` vs `/video/` URLs
+   - `detectContentTypes()` batch-processes all URLs with rate limiting (100ms delay)
+   - `separateEntriesByContentType()` splits entries into video and photo lists
+
+3. **Collection Organization**: Organizes content by collection type (enabled by default)
    - `sanitizeCollectionName()` ensures collection names are valid directory names
    - `createCollectionDirectories()` creates subdirectories for each collection
-   - `writeFavoriteVideosToFile()` writes videos to collection-specific files
-   - `getOutputFilename()` returns collection-specific filenames (fav_videos.txt vs liked_videos.txt)
+   - `writeFavoriteVideosToFile()` writes videos and photos to separate collection-specific files
+   - `getVideoOutputFilename()` / `getPhotoOutputFilename()` return appropriate filenames
    - Supports `--flat-structure` flag to disable organization
 
-3. **yt-dlp Integration**: Downloads and manages the yt-dlp executable
+4. **yt-dlp Integration**: Downloads and manages yt-dlp for video content
    - `getOrDownloadYtdlp()` automatically downloads latest yt-dlp.exe from GitHub if not present
    - Version checking: compares local `yt-dlp --version` output against GitHub releases/latest
    - `getYtdlpVersion()` runs `yt-dlp --version` to get local version (YYYY.MM.DD format)
@@ -388,6 +457,19 @@ This is a single-package Go application (`package main`) that downloads TikTok f
    - Supports `--disable-resume` flag to force re-download all videos
    - Supports `--no-progress-bar` flag to disable real-time progress display
    - New filename format includes video ID and truncated title
+
+5. **gallery-dl Integration**: Downloads and manages gallery-dl for photo/slideshow content
+   - `getOrDownloadGalleryDl()` automatically downloads latest gallery-dl.exe from GitHub if not present
+   - `getGalleryDlVersion()` runs `gallery-dl --version` to get local version (X.Y.Z format)
+   - `getLatestGalleryDlVersion()` fetches latest version from GitHub releases redirect URL
+   - `compareGalleryDlVersions()` compares semantic version strings
+   - `runGalleryDl()` executes gallery-dl with appropriate flags:
+     - `--input-file` - Read URLs from file
+     - `--directory` - Output directory
+     - `--filename` - Filename format matching yt-dlp pattern
+     - `--write-metadata` - Save metadata JSON for each photo
+   - Supports same cookie flags as yt-dlp
+   - `parseGalleryDlOutput()` parses gallery-dl output for success/failure counting
 
 4. **Real-Time Progress Bar**: Live download progress visualization
    - `ProgressState` struct tracks current download progress (current index, total, success/failure counts)
