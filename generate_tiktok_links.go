@@ -28,6 +28,13 @@ var (
 		regexp.MustCompile(`/photo/(\d+)`),
 		regexp.MustCompile(`/v/(\d+)`),
 	}
+
+	// Pre-compiled regex patterns for parsing yt-dlp and gallery-dl output
+	ytdlpErrorPattern    = regexp.MustCompile(`ERROR:\s*\[TikTok\]\s*(\d+):\s*(.+)`)
+	progressLinePattern  = regexp.MustCompile(`\[download\] Downloading item (\d+) of (\d+)`)
+	gallerySuccessPattern = regexp.MustCompile(`^#\d+`)
+	galleryErrorPattern   = regexp.MustCompile(`(?i)error|failed|\[error\]`)
+	galleryVideoIDPattern = regexp.MustCompile(`(\d{19})`)
 )
 
 // VideoEntry represents a video or photo with its collection information and metadata
@@ -1412,10 +1419,8 @@ func parseYtdlpOutput(lines []string, entries []VideoEntry) []FailureDetail {
 	}
 
 	// Regex: ERROR: [TikTok] VIDEO_ID: error message
-	errorPattern := regexp.MustCompile(`ERROR:\s*\[TikTok\]\s*(\d+):\s*(.+)`)
-
 	for _, line := range lines {
-		matches := errorPattern.FindStringSubmatch(line)
+		matches := ytdlpErrorPattern.FindStringSubmatch(line)
 		if len(matches) >= 3 {
 			videoID := matches[1]
 			errorMsg := strings.TrimSpace(matches[2])
@@ -1460,8 +1465,7 @@ func categorizeError(errorMsg string) ErrorType {
 // Returns: (currentIndex, total, isProgressLine, error)
 func parseProgressLine(line string) (int, int, bool, error) {
 	// Match pattern: [download] Downloading item X of Y
-	re := regexp.MustCompile(`\[download\] Downloading item (\d+) of (\d+)`)
-	matches := re.FindStringSubmatch(line)
+	matches := progressLinePattern.FindStringSubmatch(line)
 
 	if len(matches) != 3 {
 		return 0, 0, false, nil // Not a progress line
@@ -2115,16 +2119,11 @@ func parseGalleryDlOutput(lines []string, entries []VideoEntry) (success int, fa
 	// Track which video IDs we've seen in success messages
 	seenIDs := make(map[string]bool)
 
-	// Regex patterns for gallery-dl output
-	successPattern := regexp.MustCompile(`^#\d+`)
-	errorPattern := regexp.MustCompile(`(?i)error|failed|\[error\]`)
-	videoIDPattern := regexp.MustCompile(`(\d{19})`) // TikTok video IDs are 19 digits
-
 	for _, line := range lines {
 		// Check for error lines
-		if errorPattern.MatchString(line) {
+		if galleryErrorPattern.MatchString(line) {
 			// Extract video ID from error line
-			if matches := videoIDPattern.FindStringSubmatch(line); len(matches) > 1 {
+			if matches := galleryVideoIDPattern.FindStringSubmatch(line); len(matches) > 1 {
 				videoID := matches[1]
 				if !seenIDs[videoID] {
 					failures = append(failures, FailureDetail{
@@ -2139,9 +2138,9 @@ func parseGalleryDlOutput(lines []string, entries []VideoEntry) (success int, fa
 		}
 
 		// Check for success lines (starts with #number)
-		if successPattern.MatchString(line) {
+		if gallerySuccessPattern.MatchString(line) {
 			// Try to extract video ID from the line
-			if matches := videoIDPattern.FindStringSubmatch(line); len(matches) > 1 {
+			if matches := galleryVideoIDPattern.FindStringSubmatch(line); len(matches) > 1 {
 				seenIDs[matches[1]] = true
 			}
 			success++
