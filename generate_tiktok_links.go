@@ -1865,11 +1865,11 @@ func writeTroubleshootingTips(w *bufio.Writer, session *DownloadSession) {
 }
 
 // runYtdlp runs the yt-dlp command for the user
-func runYtdlp(psPrefix, outputName string, organizeByCollection, skipThumbnails, disableResume, disableProgressBar bool, cookieFile, cookieFromBrowser string, entries []VideoEntry) (*CollectionResult, error) {
+func runYtdlp(psPrefix, outputName string, config *Config, entries []VideoEntry) (*CollectionResult, error) {
 	// Create progress renderer if enabled
 	var renderer *ProgressRenderer
 	var state *ProgressState
-	if !disableProgressBar && supportsANSI() {
+	if !config.DisableProgressBar && supportsANSI() {
 		collectionName := filepath.Base(filepath.Dir(outputName))
 		if collectionName == "." {
 			collectionName = "videos"
@@ -1889,19 +1889,19 @@ func runYtdlp(psPrefix, outputName string, organizeByCollection, skipThumbnails,
 		ProgressState:    state,
 	}
 
-	return runYtdlpWithRunner(runner, psPrefix, outputName, organizeByCollection, skipThumbnails, disableResume, cookieFile, cookieFromBrowser, entries)
+	return runYtdlpWithRunner(runner, psPrefix, outputName, config, entries)
 }
 
 // runYtdlpWithRunner allows dependency injection for testing
-func runYtdlpWithRunner(runner CommandRunner, psPrefix, outputName string, organizeByCollection, skipThumbnails, disableResume bool, cookieFile, cookieFromBrowser string, entries []VideoEntry) (*CollectionResult, error) {
+func runYtdlpWithRunner(runner CommandRunner, psPrefix, outputName string, config *Config, entries []VideoEntry) (*CollectionResult, error) {
 	collectionName := filepath.Base(filepath.Dir(outputName))
 	if collectionName == "." {
 		collectionName = "videos"
 	}
 
-	// Calculate archive file path (matches logic below at lines 1159-1165)
+	// Calculate archive file path
 	var archivePath string
-	if organizeByCollection {
+	if config.OrganizeByCollection {
 		dir := filepath.Dir(outputName)
 		archivePath = filepath.Join(dir, "download_archive.txt")
 	} else {
@@ -1912,7 +1912,7 @@ func runYtdlpWithRunner(runner CommandRunner, psPrefix, outputName string, organ
 	videosToDownload := entries
 	skippedCount := 0
 
-	if !disableResume {
+	if !config.DisableResume {
 		archive, err := parseArchiveFile(archivePath)
 		if err == nil && len(archive) > 0 {
 			var filtered []VideoEntry
@@ -1964,7 +1964,7 @@ func runYtdlpWithRunner(runner CommandRunner, psPrefix, outputName string, organ
 	// Configure output format based on organization preference
 	// New format includes video ID and truncated title for better identification
 	var outputFormat string
-	if organizeByCollection {
+	if config.OrganizeByCollection {
 		// Include directory from outputName so videos download to collection folder
 		dir := filepath.Dir(outputName)
 		outputFormat = filepath.Join(dir, "%(upload_date)s_%(id)s_%(title).50B.%(ext)s")
@@ -1980,7 +1980,7 @@ func runYtdlpWithRunner(runner CommandRunner, psPrefix, outputName string, organ
 	if skippedCount > 0 {
 		tempFile := outputName + ".partial.txt"
 		// Ensure directory exists (should already exist from main, but just in case)
-		if organizeByCollection {
+		if config.OrganizeByCollection {
 			_ = os.MkdirAll(filepath.Dir(tempFile), 0755)
 		}
 
@@ -2006,21 +2006,21 @@ func runYtdlpWithRunner(runner CommandRunner, psPrefix, outputName string, organ
 	}
 
 	// Add thumbnail download unless skipped
-	if !skipThumbnails {
+	if !config.SkipThumbnails {
 		args = append(args, "--write-thumbnail")
 		args = append(args, "--convert-thumbnails", "jpg") // Ensure consistent .jpg extension
 	}
 
 	// Add cookie arguments if configured
-	if cookieFile != "" {
-		args = append(args, "--cookies", cookieFile)
+	if config.CookieFile != "" {
+		args = append(args, "--cookies", config.CookieFile)
 	}
-	if cookieFromBrowser != "" {
-		args = append(args, "--cookies-from-browser", cookieFromBrowser)
+	if config.CookieFromBrowser != "" {
+		args = append(args, "--cookies-from-browser", config.CookieFromBrowser)
 	}
 
 	// Add resume functionality flags unless disabled
-	if !disableResume {
+	if !config.DisableResume {
 		// Add flags for resume functionality
 		args = append(args, "--download-archive", archivePath)
 		args = append(args, "--no-overwrites")
@@ -2130,7 +2130,7 @@ func parseGalleryDlOutput(lines []string, entries []VideoEntry) (success int, fa
 }
 
 // runGalleryDl runs gallery-dl to download photo/slideshow posts
-func runGalleryDl(psPrefix, outputDir string, organizeByCollection bool, entries []VideoEntry, cookieFile, cookieFromBrowser string) (*CollectionResult, error) {
+func runGalleryDl(psPrefix, outputDir string, config *Config, entries []VideoEntry) (*CollectionResult, error) {
 	if len(entries) == 0 {
 		return &CollectionResult{
 			Name:           filepath.Base(outputDir),
@@ -2170,11 +2170,11 @@ func runGalleryDl(psPrefix, outputDir string, organizeByCollection bool, entries
 	}
 
 	// Add cookie support
-	if cookieFile != "" {
-		args = append(args, "--cookies", cookieFile)
+	if config.CookieFile != "" {
+		args = append(args, "--cookies", config.CookieFile)
 	}
-	if cookieFromBrowser != "" {
-		args = append(args, "--cookies-from-browser", cookieFromBrowser)
+	if config.CookieFromBrowser != "" {
+		args = append(args, "--cookies-from-browser", config.CookieFromBrowser)
 	}
 
 	// Execute command
@@ -2977,7 +2977,7 @@ func main() {
 					collectionOutputName := filepath.Join(collection, collectionFilename)
 
 					fmt.Printf("[*] Processing collection: %s (%d videos)\n", collection, len(collectionVideos))
-					result, _ := runYtdlp(psPrefix, collectionOutputName, config.OrganizeByCollection, config.SkipThumbnails, config.DisableResume, config.DisableProgressBar, config.CookieFile, config.CookieFromBrowser, collectionVideos)
+					result, _ := runYtdlp(psPrefix, collectionOutputName, config, collectionVideos)
 
 					// Track session results
 					if result != nil {
@@ -2990,7 +2990,7 @@ func main() {
 				// Process photos with gallery-dl
 				if len(collectionPhotos) > 0 && galleryDlAvailable {
 					fmt.Printf("[*] Processing collection: %s (%d photos)\n", collection, len(collectionPhotos))
-					result, _ := runGalleryDl(psPrefix, collection, config.OrganizeByCollection, collectionPhotos, config.CookieFile, config.CookieFromBrowser)
+					result, _ := runGalleryDl(psPrefix, collection, config, collectionPhotos)
 
 					// Track session results
 					if result != nil {
@@ -3014,7 +3014,7 @@ func main() {
 
 			// Process videos with yt-dlp
 			if len(flatVideos) > 0 {
-				result, _ := runYtdlp(psPrefix, config.OutputName, config.OrganizeByCollection, config.SkipThumbnails, config.DisableResume, config.DisableProgressBar, config.CookieFile, config.CookieFromBrowser, flatVideos)
+				result, _ := runYtdlp(psPrefix, config.OutputName, config, flatVideos)
 
 				// Track session results
 				if result != nil {
@@ -3028,7 +3028,7 @@ func main() {
 			if len(flatPhotos) > 0 && galleryDlAvailable {
 				fmt.Printf("[*] Processing %d photos with gallery-dl...\n", len(flatPhotos))
 				dir, _ := filepath.Abs(".")
-				result, _ := runGalleryDl(psPrefix, dir, config.OrganizeByCollection, flatPhotos, config.CookieFile, config.CookieFromBrowser)
+				result, _ := runGalleryDl(psPrefix, dir, config, flatPhotos)
 
 				// Track session results
 				if result != nil {
