@@ -193,7 +193,14 @@ func TestGetOrDownloadYtdlp(t *testing.T) {
 	}
 
 	client := http.DefaultClient // not actually used for this scenario
-	if err := getOrDownloadYtdlp(client, exeName); err != nil {
+	if err := getOrDownloadTool(client, &ToolConfig{
+		Name:            "yt-dlp",
+		ExeName:         "yt-dlp.exe",
+		GitHubRepo:      "yt-dlp/yt-dlp",
+		GetVersion:      getYtdlpVersion,
+		CompareVersions: compareVersions,
+		SelfUpdate:      updateYtdlp,
+	}); err != nil {
 		t.Errorf("expected nil error when file already exists, got %v", err)
 	}
 
@@ -236,7 +243,14 @@ func TestGetOrDownloadYtdlp(t *testing.T) {
 	}
 
 	// Now call getOrDownloadYtdlp again, which should attempt a download
-	if err := getOrDownloadYtdlp(customClient, exeName); err != nil {
+	if err := getOrDownloadTool(customClient, &ToolConfig{
+		Name:            "yt-dlp",
+		ExeName:         "yt-dlp.exe",
+		GitHubRepo:      "yt-dlp/yt-dlp",
+		GetVersion:      getYtdlpVersion,
+		CompareVersions: compareVersions,
+		SelfUpdate:      updateYtdlp,
+	}); err != nil {
 		t.Errorf("expected nil error on download scenario, got %v", err)
 	}
 
@@ -687,7 +701,14 @@ func TestGetOrDownloadYtdlpErrorScenarios(t *testing.T) {
 				},
 			}
 
-			err = getOrDownloadYtdlp(customClient, "yt-dlp.exe")
+			err = getOrDownloadTool(customClient, &ToolConfig{
+		Name:            "yt-dlp",
+		ExeName:         "yt-dlp.exe",
+		GitHubRepo:      "yt-dlp/yt-dlp",
+		GetVersion:      getYtdlpVersion,
+		CompareVersions: compareVersions,
+		SelfUpdate:      updateYtdlp,
+	})
 			if tt.expectError && err == nil {
 				t.Error("expected error but got none")
 			} else if !tt.expectError && err != nil {
@@ -3063,7 +3084,7 @@ func TestGetLatestYtdlpVersion(t *testing.T) {
 			original: originalTransport,
 		}
 
-		version, err := getLatestYtdlpVersion(client)
+		version, err := getLatestVersion(client, &ToolConfig{GitHubRepo: "yt-dlp/yt-dlp"})
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
@@ -3078,7 +3099,7 @@ func TestGetLatestYtdlpVersion(t *testing.T) {
 			Transport: &errorTransport{err: fmt.Errorf("network unreachable")},
 		}
 
-		_, err := getLatestYtdlpVersion(client)
+		_, err := getLatestVersion(client, &ToolConfig{GitHubRepo: "yt-dlp/yt-dlp"})
 		if err == nil {
 			t.Error("expected error for network failure, got nil")
 		}
@@ -3093,7 +3114,7 @@ func TestGetLatestYtdlpVersion(t *testing.T) {
 		client := server.Client()
 		client.Transport = &redirectTestTransport{server: server}
 
-		_, err := getLatestYtdlpVersion(client)
+		_, err := getLatestVersion(client, &ToolConfig{GitHubRepo: "yt-dlp/yt-dlp"})
 		if err == nil {
 			t.Error("expected error for unexpected status code, got nil")
 		}
@@ -3108,7 +3129,7 @@ func TestGetLatestYtdlpVersion(t *testing.T) {
 		client := server.Client()
 		client.Transport = &redirectTestTransport{server: server}
 
-		_, err := getLatestYtdlpVersion(client)
+		_, err := getLatestVersion(client, &ToolConfig{GitHubRepo: "yt-dlp/yt-dlp"})
 		if err == nil {
 			t.Error("expected error for missing location header, got nil")
 		}
@@ -3124,7 +3145,7 @@ func TestGetLatestYtdlpVersion(t *testing.T) {
 		client := server.Client()
 		client.Transport = &redirectTestTransport{server: server}
 
-		_, err := getLatestYtdlpVersion(client)
+		_, err := getLatestVersion(client, &ToolConfig{GitHubRepo: "yt-dlp/yt-dlp"})
 		if err == nil {
 			t.Error("expected error for invalid URL format, got nil")
 		}
@@ -3177,7 +3198,7 @@ func TestBackupYtdlp(t *testing.T) {
 		}
 
 		// Backup
-		if err := backupYtdlp(exeName); err != nil {
+		if err := backupExe(exeName); err != nil {
 			t.Errorf("backup failed: %v", err)
 		}
 
@@ -3217,7 +3238,7 @@ func TestBackupYtdlp(t *testing.T) {
 		}
 
 		// Backup
-		if err := backupYtdlp(exeName); err != nil {
+		if err := backupExe(exeName); err != nil {
 			t.Errorf("backup failed: %v", err)
 		}
 
@@ -3240,7 +3261,7 @@ func TestBackupYtdlp(t *testing.T) {
 	t.Run("backup non-existent file", func(t *testing.T) {
 		exeName := "nonexistent.exe"
 
-		err := backupYtdlp(exeName)
+		err := backupExe(exeName)
 		if err == nil {
 			t.Error("expected error when backing up non-existent file")
 		}
@@ -3294,7 +3315,7 @@ func TestDownloadLatestYtdlp(t *testing.T) {
 	}
 
 	// Test download
-	if err := downloadLatestYtdlp(customClient, exeName); err != nil {
+	if err := downloadLatestRelease(customClient, &ToolConfig{Name: "yt-dlp", ExeName: exeName, GitHubRepo: "yt-dlp/yt-dlp"}); err != nil {
 		t.Errorf("download failed: %v", err)
 	}
 
@@ -4534,7 +4555,14 @@ func TestGetOrDownloadGalleryDl(t *testing.T) {
 
 		// Should return nil when file exists (won't check version since it's a dummy)
 		client := http.DefaultClient
-		err = getOrDownloadGalleryDl(client, exeName)
+		err = getOrDownloadTool(client, &ToolConfig{
+		Name:            "gallery-dl",
+		ExeName:         "gallery-dl.exe",
+		GitHubRepo:      "mikf/gallery-dl",
+		GetVersion:      getGalleryDlVersion,
+		CompareVersions: compareGalleryDlVersions,
+		StripVPrefix:    true,
+	})
 		if err != nil {
 			t.Errorf("expected nil error when file exists, got: %v", err)
 		}
@@ -4588,7 +4616,14 @@ func TestGetOrDownloadGalleryDl(t *testing.T) {
 			},
 		}
 
-		err = getOrDownloadGalleryDl(customClient, exeName)
+		err = getOrDownloadTool(customClient, &ToolConfig{
+		Name:            "gallery-dl",
+		ExeName:         "gallery-dl.exe",
+		GitHubRepo:      "mikf/gallery-dl",
+		GetVersion:      getGalleryDlVersion,
+		CompareVersions: compareGalleryDlVersions,
+		StripVPrefix:    true,
+	})
 		if err != nil {
 			t.Errorf("expected nil error on download, got: %v", err)
 		}
@@ -4611,8 +4646,6 @@ func TestGetOrDownloadGalleryDl(t *testing.T) {
 		if err := os.Chdir(tmpDir); err != nil {
 			t.Fatalf("failed to chdir: %v", err)
 		}
-
-		exeName := "gallery-dl.exe"
 
 		// Create a mock release JSON with wrong asset name
 		mockReleaseJSON := `{
@@ -4638,7 +4671,14 @@ func TestGetOrDownloadGalleryDl(t *testing.T) {
 			},
 		}
 
-		err = getOrDownloadGalleryDl(customClient, exeName)
+		err = getOrDownloadTool(customClient, &ToolConfig{
+		Name:            "gallery-dl",
+		ExeName:         "gallery-dl.exe",
+		GitHubRepo:      "mikf/gallery-dl",
+		GetVersion:      getGalleryDlVersion,
+		CompareVersions: compareGalleryDlVersions,
+		StripVPrefix:    true,
+	})
 		if err == nil {
 			t.Error("expected error when asset not found")
 		}
@@ -4760,7 +4800,7 @@ func TestGetLatestGalleryDlVersion(t *testing.T) {
 			original: client.Transport,
 		}
 
-		version, err := getLatestGalleryDlVersion(client)
+		version, err := getLatestVersion(client, &ToolConfig{GitHubRepo: "mikf/gallery-dl", StripVPrefix: true})
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
@@ -4775,7 +4815,7 @@ func TestGetLatestGalleryDlVersion(t *testing.T) {
 			Transport: &errorTransport{err: fmt.Errorf("network unreachable")},
 		}
 
-		_, err := getLatestGalleryDlVersion(client)
+		_, err := getLatestVersion(client, &ToolConfig{GitHubRepo: "mikf/gallery-dl", StripVPrefix: true})
 		if err == nil {
 			t.Error("expected error for network failure, got nil")
 		}
@@ -4845,7 +4885,7 @@ func TestDownloadLatestGalleryDl(t *testing.T) {
 			},
 		}
 
-		err = downloadLatestGalleryDl(client, exeName)
+		err = downloadLatestRelease(client, &ToolConfig{Name: "gallery-dl", ExeName: exeName, GitHubRepo: "mikf/gallery-dl"})
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
@@ -4883,7 +4923,7 @@ func TestDownloadLatestGalleryDl(t *testing.T) {
 			},
 		}
 
-		err = downloadLatestGalleryDl(client, "gallery-dl.exe")
+		err = downloadLatestRelease(client, &ToolConfig{Name: "gallery-dl", ExeName: "gallery-dl.exe", GitHubRepo: "mikf/gallery-dl"})
 		if err == nil {
 			t.Error("expected error for invalid JSON")
 		}
@@ -4911,7 +4951,7 @@ func TestBackupGalleryDl(t *testing.T) {
 			t.Fatalf("failed to create exe: %v", err)
 		}
 
-		err = backupGalleryDl(exeName)
+		err = backupExe(exeName)
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
@@ -4944,7 +4984,7 @@ func TestBackupGalleryDl(t *testing.T) {
 			t.Fatalf("failed to chdir: %v", err)
 		}
 
-		err = backupGalleryDl("nonexistent.exe")
+		err = backupExe("nonexistent.exe")
 		if err == nil {
 			t.Error("expected error for non-existent file")
 		}

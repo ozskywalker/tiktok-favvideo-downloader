@@ -216,6 +216,192 @@ type Config struct {
 	CookieFromBrowser    string // Browser name (chrome, firefox, edge, safari, etc.)
 }
 
+
+// ToolConfig defines how to manage an external tool (yt-dlp, gallery-dl, etc.)
+type ToolConfig struct {
+	Name            string                                       // Display name (e.g., "yt-dlp")
+	ExeName         string                                       // Executable filename (e.g., "yt-dlp.exe")
+	GitHubRepo      string                                       // GitHub repo path (e.g., "yt-dlp/yt-dlp")
+	GetVersion      func(exePath string) (string, error)         // Get local version
+	CompareVersions func(local, remote string) int               // Compare versions
+	SelfUpdate      func(exePath string) error                   // Self-update command (nil if unsupported)
+	StripVPrefix    bool                                         // Strip "v" prefix from GitHub release tag
+}
+
+// backupExe backs up the current executable to .old
+func backupExe(exeName string) error {
+	oldFileName := exeName + ".old"
+
+	// Delete existing .old file if it exists
+	if _, err := os.Stat(oldFileName); err == nil {
+		fmt.Printf("[*] Removing old backup file: %s\n", oldFileName)
+		if err := os.Remove(oldFileName); err != nil {
+			return fmt.Errorf("failed to delete existing %s: %v", oldFileName, err)
+		}
+	}
+
+	// Rename current exe to .old
+	fmt.Printf("[*] Backing up current %s to %s\n", exeName, oldFileName)
+	if err := os.Rename(exeName, oldFileName); err != nil {
+		return fmt.Errorf("failed to rename %s to %s: %v", exeName, oldFileName, err)
+	}
+
+	return nil
+}
+
+// downloadLatestRelease downloads the latest version of a tool from GitHub releases
+func downloadLatestRelease(client *http.Client, tool *ToolConfig) error {
+	fmt.Printf("[*] Downloading the latest %s release from GitHub...\n", tool.Name)
+
+	releaseURL := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", tool.GitHubRepo)
+	resp, err := client.Get(releaseURL)
+	if err != nil {
+		return fmt.Errorf("failed to fetch the latest release info: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	var release struct {
+		Assets []struct {
+			Name               string `json:"name"`
+			BrowserDownloadURL string `json:"browser_download_url"`
+		} `json:"assets"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		return fmt.Errorf("failed to parse GitHub API release JSON: %v", err)
+	}
+
+	var downloadURL string
+	for _, asset := range release.Assets {
+		if strings.EqualFold(asset.Name, tool.ExeName) {
+			downloadURL = asset.BrowserDownloadURL
+			break
+		}
+	}
+	if downloadURL == "" {
+		return fmt.Errorf("could not find %s in the latest release assets", tool.ExeName)
+	}
+
+	fmt.Printf("[*] Downloading %s...\n", downloadURL)
+
+	out, err := os.Create(tool.ExeName)
+	if err != nil {
+		return fmt.Errorf("error creating %s: %v", tool.ExeName, err)
+	}
+	defer func() { _ = out.Close() }()
+
+	downloadResp, err := client.Get(downloadURL)
+	if err != nil {
+		return fmt.Errorf("failed to download %s: %v", tool.ExeName, err)
+	}
+	defer func() { _ = downloadResp.Body.Close() }()
+
+	if _, err := io.Copy(out, downloadResp.Body); err != nil {
+		return fmt.Errorf("failed to write %s to disk: %v", tool.ExeName, err)
+	}
+
+	fmt.Printf("[*] Successfully downloaded %s\n", tool.Name)
+	return nil
+}
+
+// getLatestVersion fetches the latest version of a tool from GitHub releases
+func getLatestVersion(client *http.Client, tool *ToolConfig) (string, error) {
+	checkRedirect := client.CheckRedirect
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	defer func() { client.CheckRedirect = checkRedirect }()
+
+	url := fmt.Sprintf("https://github.com/%s/releases/latest", tool.GitHubRepo)
+	resp, err := client.Get(url)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch GitHub releases: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusFound && resp.StatusCode != http.StatusMovedPermanently {
+		return "", fmt.Errorf("unexpected response status: %d", resp.StatusCode)
+	}
+
+	location := resp.Header.Get("Location")
+	if location == "" {
+		return "", fmt.Errorf("no redirect location in response")
+	}
+
+	parts := strings.Split(location, "/tag/")
+	if len(parts) != 2 {
+		return "", fmt.Errorf("unexpected redirect URL format: %s", location)
+	}
+
+	version := strings.TrimSpace(parts[1])
+	if tool.StripVPrefix {
+		version = strings.TrimPrefix(version, "v")
+	}
+	if version == "" {
+		return "", fmt.Errorf("empty version in redirect URL")
+	}
+
+	return version, nil
+}
+
+// getOrDownloadTool checks if a tool is present, offers updates, or downloads it
+func getOrDownloadTool(client *http.Client, tool *ToolConfig) error {
+	if _, err := os.Stat(tool.ExeName); err == nil {
+		localVersion, err := tool.GetVersion(tool.ExeName)
+		if err != nil {
+			fmt.Printf("[!] Warning: Could not get local %s version: %v\n", tool.Name, err)
+			fmt.Printf("[*] Found %s in the current directory. Continuing with existing version.\n", tool.ExeName)
+			return nil
+		}
+
+		latestVersion, err := getLatestVersion(client, tool)
+		if err != nil {
+			fmt.Printf("[!] Warning: Could not check for %s updates: %v\n", tool.Name, err)
+			fmt.Printf("[*] Found %s (version %s). Continuing with existing version.\n", tool.ExeName, localVersion)
+			return nil
+		}
+
+		if tool.CompareVersions(localVersion, latestVersion) < 0 {
+			fmt.Printf("[*] %s: Current version: %s, Latest version: %s\n", tool.Name, localVersion, latestVersion)
+			if promptForUpdate() {
+				// Try self-update first if supported
+				if tool.SelfUpdate != nil {
+					if err := tool.SelfUpdate(tool.ExeName); err != nil {
+						fmt.Printf("[!] Self-update failed: %v\n", err)
+						fmt.Printf("[*] Trying manual download as fallback...\n")
+					} else {
+						return nil
+					}
+				}
+
+				// Manual download (backup + download)
+				if err := backupExe(tool.ExeName); err != nil {
+					return fmt.Errorf("backup failed: %v", err)
+				}
+
+				if err := downloadLatestRelease(client, tool); err != nil {
+					fmt.Printf("[!] Download failed: %v\n", err)
+					fmt.Printf("[*] Attempting to restore backup...\n")
+					if restoreErr := os.Rename(tool.ExeName+".old", tool.ExeName); restoreErr != nil {
+						return fmt.Errorf("download failed and could not restore backup: %v (restore error: %v)", err, restoreErr)
+					}
+					fmt.Printf("[*] Backup restored. Continuing with existing version.\n")
+					return nil
+				}
+			} else {
+				fmt.Printf("[*] Continuing with existing %s (version %s).\n", tool.ExeName, localVersion)
+			}
+		} else {
+			fmt.Printf("[*] Found %s (version %s) - up to date.\n", tool.ExeName, localVersion)
+		}
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("error checking for existing %s: %v", tool.ExeName, err)
+	}
+
+	fmt.Printf("[*] %s not found. Downloading the latest release from GitHub...\n", tool.ExeName)
+	return downloadLatestRelease(client, tool)
+}
+
 // getYtdlpVersion runs yt-dlp --version and returns the version string (e.g., "2026.01.29")
 func getYtdlpVersion(exePath string) (string, error) {
 	// Use explicit relative path for Go 1.19+ security (cannot run executables from current dir without ./)
@@ -228,46 +414,6 @@ func getYtdlpVersion(exePath string) (string, error) {
 	if version == "" {
 		return "", fmt.Errorf("yt-dlp --version returned empty output")
 	}
-	return version, nil
-}
-
-// getLatestYtdlpVersion fetches the latest yt-dlp version from GitHub releases
-// It uses the redirect from /releases/latest to determine the version tag
-func getLatestYtdlpVersion(client *http.Client) (string, error) {
-	// Create a client that doesn't follow redirects so we can capture the Location header
-	checkRedirect := client.CheckRedirect
-	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		return http.ErrUseLastResponse // Don't follow redirects
-	}
-	defer func() { client.CheckRedirect = checkRedirect }()
-
-	resp, err := client.Get("https://github.com/yt-dlp/yt-dlp/releases/latest")
-	if err != nil {
-		return "", fmt.Errorf("failed to fetch GitHub releases: %v", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	// GitHub returns 302 redirect to /releases/tag/YYYY.MM.DD
-	if resp.StatusCode != http.StatusFound && resp.StatusCode != http.StatusMovedPermanently {
-		return "", fmt.Errorf("unexpected response status: %d", resp.StatusCode)
-	}
-
-	location := resp.Header.Get("Location")
-	if location == "" {
-		return "", fmt.Errorf("no redirect location in response")
-	}
-
-	// Extract version from URL like https://github.com/yt-dlp/yt-dlp/releases/tag/2026.01.29
-	parts := strings.Split(location, "/tag/")
-	if len(parts) != 2 {
-		return "", fmt.Errorf("unexpected redirect URL format: %s", location)
-	}
-
-	version := strings.TrimSpace(parts[1])
-	if version == "" {
-		return "", fmt.Errorf("empty version in redirect URL")
-	}
-
 	return version, nil
 }
 
@@ -314,136 +460,6 @@ func promptForUpdate() bool {
 	return false
 }
 
-// backupYtdlp backs up the current yt-dlp.exe to yt-dlp.exe.old
-// Deletes existing .old file if it exists
-func backupYtdlp(exeName string) error {
-	oldFileName := exeName + ".old"
-
-	// Delete existing .old file if it exists
-	if _, err := os.Stat(oldFileName); err == nil {
-		fmt.Printf("[*] Removing old backup file: %s\n", oldFileName)
-		if err := os.Remove(oldFileName); err != nil {
-			return fmt.Errorf("failed to delete existing %s: %v", oldFileName, err)
-		}
-	}
-
-	// Rename current exe to .old
-	fmt.Printf("[*] Backing up current %s to %s\n", exeName, oldFileName)
-	if err := os.Rename(exeName, oldFileName); err != nil {
-		return fmt.Errorf("failed to rename %s to %s: %v", exeName, oldFileName, err)
-	}
-
-	return nil
-}
-
-// downloadLatestYtdlp downloads the latest version of yt-dlp from GitHub
-func downloadLatestYtdlp(client *http.Client, exeName string) error {
-	fmt.Printf("[*] Downloading the latest release from GitHub...\n")
-
-	// 1. Retrieve the latest release info from GitHub
-	releaseURL := "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest"
-	resp, err := client.Get(releaseURL)
-	if err != nil {
-		return fmt.Errorf("failed to fetch the latest release info: %v", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	var release struct {
-		Assets []struct {
-			Name               string `json:"name"`
-			BrowserDownloadURL string `json:"browser_download_url"`
-		} `json:"assets"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
-		return fmt.Errorf("failed to parse GitHub API release JSON: %v", err)
-	}
-
-	// 2. Find the asset with name "yt-dlp.exe"
-	var downloadURL string
-	for _, asset := range release.Assets {
-		if strings.EqualFold(asset.Name, exeName) {
-			downloadURL = asset.BrowserDownloadURL
-			break
-		}
-	}
-	if downloadURL == "" {
-		return fmt.Errorf("could not find %s in the latest release assets", exeName)
-	}
-
-	fmt.Printf("[*] Downloading %s...\n", downloadURL)
-
-	// 3. Download the file
-	out, err := os.Create(exeName)
-	if err != nil {
-		return fmt.Errorf("error creating %s: %v", exeName, err)
-	}
-	defer func() { _ = out.Close() }()
-
-	downloadResp, err := client.Get(downloadURL)
-	if err != nil {
-		return fmt.Errorf("failed to download %s: %v", exeName, err)
-	}
-	defer func() { _ = downloadResp.Body.Close() }()
-
-	// 4. Copy the response body to the file
-	if _, err := io.Copy(out, downloadResp.Body); err != nil {
-		return fmt.Errorf("failed to write %s to disk: %v", exeName, err)
-	}
-
-	fmt.Println("[*] Successfully downloaded yt-dlp")
-	return nil
-}
-
-// getOrDownloadYtdlp checks if yt-dlp.exe is present in the current directory.
-// If not, it downloads the latest version from GitHub.
-// If it exists but is older than 30 days, prompts user to update.
-// Accepts an *http.Client so we can mock the download in tests.
-func getOrDownloadYtdlp(client *http.Client, exeName string) error {
-	// Check if the file already exists
-	if _, err := os.Stat(exeName); err == nil {
-		// File exists - check if it's older than 30 days
-		isOld, err := isFileOlderThan30Days(exeName)
-		if err != nil {
-			fmt.Printf("[!] Warning: Could not check file age: %v\n", err)
-			fmt.Printf("[*] Found %s in the current directory. Continuing with existing version.\n", exeName)
-			return nil
-		}
-
-		if isOld {
-			// Prompt user for update
-			if promptForUpdate() {
-				// User wants to update - backup current version
-				if err := backupYtdlp(exeName); err != nil {
-					return fmt.Errorf("backup failed: %v", err)
-				}
-
-				// Download new version
-				if err := downloadLatestYtdlp(client, exeName); err != nil {
-					// Download failed - try to restore backup
-					fmt.Printf("[!] Download failed: %v\n", err)
-					fmt.Printf("[*] Attempting to restore backup...\n")
-					if restoreErr := os.Rename(exeName+".old", exeName); restoreErr != nil {
-						return fmt.Errorf("download failed and could not restore backup: %v (restore error: %v)", err, restoreErr)
-					}
-					fmt.Printf("[*] Backup restored. Continuing with existing version.\n")
-					return nil
-				}
-			} else {
-				fmt.Printf("[*] Continuing with existing %s.\n", exeName)
-			}
-		} else {
-			fmt.Printf("[*] Found %s in the current directory. Skipping download.\n", exeName)
-		}
-		return nil
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("error checking for existing %s: %v", exeName, err)
-	}
-
-	// File doesn't exist - download it
-	fmt.Printf("[*] %s not found. Downloading the latest release from GitHub...\n", exeName)
-	return downloadLatestYtdlp(client, exeName)
-}
-
 // getGalleryDlVersion runs gallery-dl --version and returns the version string
 func getGalleryDlVersion(exePath string) (string, error) {
 	// Use explicit relative path for Go 1.19+ security
@@ -462,47 +478,6 @@ func getGalleryDlVersion(exePath string) (string, error) {
 	if version == "" {
 		return "", fmt.Errorf("gallery-dl --version returned empty output")
 	}
-	return version, nil
-}
-
-// getLatestGalleryDlVersion fetches the latest gallery-dl version from GitHub releases
-func getLatestGalleryDlVersion(client *http.Client) (string, error) {
-	// Create a client that doesn't follow redirects so we can capture the Location header
-	checkRedirect := client.CheckRedirect
-	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		return http.ErrUseLastResponse // Don't follow redirects
-	}
-	defer func() { client.CheckRedirect = checkRedirect }()
-
-	resp, err := client.Get("https://github.com/mikf/gallery-dl/releases/latest")
-	if err != nil {
-		return "", fmt.Errorf("failed to fetch GitHub releases: %v", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	// GitHub returns 302 redirect to /releases/tag/vX.Y.Z
-	if resp.StatusCode != http.StatusFound && resp.StatusCode != http.StatusMovedPermanently {
-		return "", fmt.Errorf("unexpected response status: %d", resp.StatusCode)
-	}
-
-	location := resp.Header.Get("Location")
-	if location == "" {
-		return "", fmt.Errorf("no redirect location in response")
-	}
-
-	// Extract version from URL like https://github.com/mikf/gallery-dl/releases/tag/v1.28.0
-	parts := strings.Split(location, "/tag/")
-	if len(parts) != 2 {
-		return "", fmt.Errorf("unexpected redirect URL format: %s", location)
-	}
-
-	version := strings.TrimSpace(parts[1])
-	// Remove 'v' prefix if present (gallery-dl uses v1.28.0 format)
-	version = strings.TrimPrefix(version, "v")
-	if version == "" {
-		return "", fmt.Errorf("empty version in redirect URL")
-	}
-
 	return version, nil
 }
 
@@ -533,147 +508,6 @@ func compareGalleryDlVersions(local, remote string) int {
 		return 1
 	}
 	return 0
-}
-
-// downloadLatestGalleryDl downloads the latest version of gallery-dl from GitHub
-func downloadLatestGalleryDl(client *http.Client, exeName string) error {
-	fmt.Printf("[*] Downloading the latest gallery-dl release from GitHub...\n")
-
-	// Retrieve the latest release info from GitHub
-	releaseURL := "https://api.github.com/repos/mikf/gallery-dl/releases/latest"
-	resp, err := client.Get(releaseURL)
-	if err != nil {
-		return fmt.Errorf("failed to fetch the latest release info: %v", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	var release struct {
-		Assets []struct {
-			Name               string `json:"name"`
-			BrowserDownloadURL string `json:"browser_download_url"`
-		} `json:"assets"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
-		return fmt.Errorf("failed to parse GitHub API release JSON: %v", err)
-	}
-
-	// Find the Windows executable asset
-	// gallery-dl releases include: gallery-dl.exe, gallery-dl_X.Y.Z.exe, gallery-dl.bin (Linux)
-	var downloadURL string
-	for _, asset := range release.Assets {
-		if strings.EqualFold(asset.Name, exeName) {
-			downloadURL = asset.BrowserDownloadURL
-			break
-		}
-	}
-	if downloadURL == "" {
-		return fmt.Errorf("could not find %s in the latest release assets", exeName)
-	}
-
-	fmt.Printf("[*] Downloading %s...\n", downloadURL)
-
-	// Download the file
-	out, err := os.Create(exeName)
-	if err != nil {
-		return fmt.Errorf("error creating %s: %v", exeName, err)
-	}
-	defer func() { _ = out.Close() }()
-
-	downloadResp, err := client.Get(downloadURL)
-	if err != nil {
-		return fmt.Errorf("failed to download %s: %v", exeName, err)
-	}
-	defer func() { _ = downloadResp.Body.Close() }()
-
-	// Copy the response body to the file
-	if _, err := io.Copy(out, downloadResp.Body); err != nil {
-		return fmt.Errorf("failed to write %s to disk: %v", exeName, err)
-	}
-
-	fmt.Println("[*] Successfully downloaded gallery-dl")
-	return nil
-}
-
-// backupGalleryDl backs up the current gallery-dl.exe to gallery-dl.exe.old
-func backupGalleryDl(exeName string) error {
-	oldFileName := exeName + ".old"
-
-	// Delete existing .old file if it exists
-	if _, err := os.Stat(oldFileName); err == nil {
-		fmt.Printf("[*] Removing old backup file: %s\n", oldFileName)
-		if err := os.Remove(oldFileName); err != nil {
-			return fmt.Errorf("failed to delete existing %s: %v", oldFileName, err)
-		}
-	}
-
-	// Rename current exe to .old
-	fmt.Printf("[*] Backing up current %s to %s\n", exeName, oldFileName)
-	if err := os.Rename(exeName, oldFileName); err != nil {
-		return fmt.Errorf("failed to rename %s to %s: %v", exeName, oldFileName, err)
-	}
-
-	return nil
-}
-
-// getOrDownloadGalleryDl checks if gallery-dl.exe is present and downloads if needed.
-// Similar to getOrDownloadYtdlp but for gallery-dl.
-func getOrDownloadGalleryDl(client *http.Client, exeName string) error {
-	// Check if the file already exists
-	if _, err := os.Stat(exeName); err == nil {
-		// File exists - check version against GitHub latest
-		localVersion, err := getGalleryDlVersion(exeName)
-		if err != nil {
-			fmt.Printf("[!] Warning: Could not get local gallery-dl version: %v\n", err)
-			fmt.Printf("[*] Found %s in the current directory. Continuing with existing version.\n", exeName)
-			return nil
-		}
-
-		latestVersion, err := getLatestGalleryDlVersion(client)
-		if err != nil {
-			fmt.Printf("[!] Warning: Could not check for gallery-dl updates: %v\n", err)
-			fmt.Printf("[*] Found %s (version %s). Continuing with existing version.\n", exeName, localVersion)
-			return nil
-		}
-
-		if compareGalleryDlVersions(localVersion, latestVersion) < 0 {
-			// Local version is older than latest
-			fmt.Printf("[*] gallery-dl: Current version: %s, Latest version: %s\n", localVersion, latestVersion)
-			fmt.Print("[*] A newer version of gallery-dl is available. Would you like to update? (Y/n, default is 'Y'): ")
-
-			scanner := bufio.NewScanner(os.Stdin)
-			scanner.Scan()
-			input := strings.TrimSpace(strings.ToLower(scanner.Text()))
-
-			if input == "" || input == "y" || input == "yes" {
-				// Backup and download new version
-				if err := backupGalleryDl(exeName); err != nil {
-					return fmt.Errorf("backup failed: %v", err)
-				}
-
-				if err := downloadLatestGalleryDl(client, exeName); err != nil {
-					// Download failed - try to restore backup
-					fmt.Printf("[!] Download failed: %v\n", err)
-					fmt.Printf("[*] Attempting to restore backup...\n")
-					if restoreErr := os.Rename(exeName+".old", exeName); restoreErr != nil {
-						return fmt.Errorf("download failed and could not restore backup: %v (restore error: %v)", err, restoreErr)
-					}
-					fmt.Printf("[*] Backup restored. Continuing with existing version.\n")
-					return nil
-				}
-			} else {
-				fmt.Printf("[*] Continuing with existing %s (version %s).\n", exeName, localVersion)
-			}
-		} else {
-			fmt.Printf("[*] Found %s (version %s) - up to date.\n", exeName, localVersion)
-		}
-		return nil
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("error checking for existing %s: %v", exeName, err)
-	}
-
-	// File doesn't exist - download it
-	fmt.Printf("[*] %s not found. Downloading the latest release from GitHub...\n", exeName)
-	return downloadLatestGalleryDl(client, exeName)
 }
 
 // parseFavoriteVideosFromFile reads the given JSON file and returns the list of video entries.
@@ -2795,14 +2629,28 @@ func main() {
 	}
 
 	// Attempt to get or download yt-dlp.exe (handles updates for existing files)
-	if err := getOrDownloadYtdlp(http.DefaultClient, "yt-dlp.exe"); err != nil {
+	if err := getOrDownloadTool(http.DefaultClient, &ToolConfig{
+		Name:            "yt-dlp",
+		ExeName:         "yt-dlp.exe",
+		GitHubRepo:      "yt-dlp/yt-dlp",
+		GetVersion:      getYtdlpVersion,
+		CompareVersions: compareVersions,
+		SelfUpdate:      updateYtdlp,
+	}); err != nil {
 		fmt.Printf("[!] Warning: %v\n", err)
 		// Not exiting here so you can still generate fav_videos.txt if needed
 	}
 
 	// Also get gallery-dl for photo support
 	galleryDlAvailable := false
-	if err := getOrDownloadGalleryDl(http.DefaultClient, "gallery-dl.exe"); err != nil {
+	if err := getOrDownloadTool(http.DefaultClient, &ToolConfig{
+		Name:            "gallery-dl",
+		ExeName:         "gallery-dl.exe",
+		GitHubRepo:      "mikf/gallery-dl",
+		GetVersion:      getGalleryDlVersion,
+		CompareVersions: compareGalleryDlVersions,
+		StripVPrefix:    true,
+	}); err != nil {
 		fmt.Printf("[!] Warning: gallery-dl not available, photo posts will be skipped: %v\n", err)
 	} else {
 		galleryDlAvailable = true
