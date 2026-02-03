@@ -1539,6 +1539,37 @@ func supportsANSI() bool {
 	return false
 }
 
+// getWriter returns the output writer, defaulting to os.Stdout
+func (pr *ProgressRenderer) getWriter() io.Writer {
+	if pr.writer != nil {
+		return pr.writer
+	}
+	return os.Stdout
+}
+
+// buildProgressBar creates a progress bar string and percentage from current/total values
+func buildProgressBar(current, total, barWidth int) (string, float64) {
+	percentage := 0.0
+	if total > 0 {
+		percentage = float64(current) / float64(total) * 100
+	}
+	filledWidth := int(float64(barWidth) * percentage / 100)
+	if filledWidth > barWidth {
+		filledWidth = barWidth
+	}
+	bar := strings.Repeat("█", filledWidth) + strings.Repeat("░", barWidth-filledWidth)
+	return bar, percentage
+}
+
+// writeLine writes a carriage-return-prefixed line and pads to clear any previous longer line
+func (pr *ProgressRenderer) writeLine(line string) {
+	if len(line) < pr.lastLineLen {
+		line += strings.Repeat(" ", pr.lastLineLen-len(line))
+	}
+	pr.lastLineLen = len(line)
+	_, _ = fmt.Fprint(pr.getWriter(), line)
+}
+
 // renderProgress displays a live progress bar using ANSI escape codes
 // Format: "Downloading favorites (87/92) | ████████████░░░ 94.6% | Success: 85 | Failed: 2"
 func (pr *ProgressRenderer) renderProgress(state *ProgressState) {
@@ -1546,59 +1577,23 @@ func (pr *ProgressRenderer) renderProgress(state *ProgressState) {
 		return
 	}
 
-	// Default to stdout if no writer specified
-	out := pr.writer
-	if out == nil {
-		out = os.Stdout
-	}
+	bar, percentage := buildProgressBar(state.CurrentIndex, state.TotalVideos, 20)
 
-	// Calculate percentage
-	percentage := 0.0
-	if state.TotalVideos > 0 {
-		percentage = float64(state.CurrentIndex) / float64(state.TotalVideos) * 100
-	}
-
-	// Create progress bar (20 characters wide)
-	barWidth := 20
-	filledWidth := int(float64(barWidth) * percentage / 100)
-	if filledWidth > barWidth {
-		filledWidth = barWidth
-	}
-
-	bar := strings.Repeat("█", filledWidth) + strings.Repeat("░", barWidth-filledWidth)
-
-	// Color codes
 	green := "\033[32m"
 	yellow := "\033[33m"
 	red := "\033[31m"
 	reset := "\033[0m"
 
-	// Build progress line
 	line := fmt.Sprintf("\rDownloading %s (%d/%d) | %s %.1f%% | %sSuccess: %d%s | %sSkipped: %d%s | %sFailed: %d%s",
 		state.CollectionName,
-		state.CurrentIndex,
-		state.TotalVideos,
-		bar,
-		percentage,
-		green,
-		state.SuccessCount,
-		reset,
-		yellow,
-		state.SkippedCount,
-		reset,
-		red,
-		state.FailureCount,
-		reset,
+		state.CurrentIndex, state.TotalVideos,
+		bar, percentage,
+		green, state.SuccessCount, reset,
+		yellow, state.SkippedCount, reset,
+		red, state.FailureCount, reset,
 	)
 
-	// Clear previous line if it was longer
-	if len(line) < pr.lastLineLen {
-		line += strings.Repeat(" ", pr.lastLineLen-len(line))
-	}
-	pr.lastLineLen = len(line)
-
-	// Print progress (using \r to overwrite current line)
-	_, _ = fmt.Fprint(out, line)
+	pr.writeLine(line)
 }
 
 // renderDetectionProgress renders a progress bar for content type detection.
@@ -1608,58 +1603,22 @@ func (pr *ProgressRenderer) renderDetectionProgress(current, total, videoCount, 
 		return
 	}
 
-	// Default to stdout if no writer specified
-	out := pr.writer
-	if out == nil {
-		out = os.Stdout
-	}
+	bar, percentage := buildProgressBar(current, total, 20)
 
-	// Calculate percentage
-	percentage := 0.0
-	if total > 0 {
-		percentage = float64(current) / float64(total) * 100
-	}
-
-	// Create progress bar (20 characters wide)
-	barWidth := 20
-	filledWidth := int(float64(barWidth) * percentage / 100)
-	if filledWidth > barWidth {
-		filledWidth = barWidth
-	}
-
-	bar := strings.Repeat("█", filledWidth) + strings.Repeat("░", barWidth-filledWidth)
-
-	// Color codes
 	green := "\033[32m"
 	cyan := "\033[36m"
 	red := "\033[31m"
 	reset := "\033[0m"
 
-	// Build progress line
 	line := fmt.Sprintf("\rDetecting content types (%d/%d) | %s %.1f%% | %sVideos: %d%s | %sPhotos: %d%s | %sErrors: %d%s",
-		current,
-		total,
-		bar,
-		percentage,
-		green,
-		videoCount,
-		reset,
-		cyan,
-		photoCount,
-		reset,
-		red,
-		errorCount,
-		reset,
+		current, total,
+		bar, percentage,
+		green, videoCount, reset,
+		cyan, photoCount, reset,
+		red, errorCount, reset,
 	)
 
-	// Clear previous line if it was longer
-	if len(line) < pr.lastLineLen {
-		line += strings.Repeat(" ", pr.lastLineLen-len(line))
-	}
-	pr.lastLineLen = len(line)
-
-	// Print progress (using \r to overwrite current line)
-	_, _ = fmt.Fprint(out, line)
+	pr.writeLine(line)
 }
 
 // clearProgress clears the progress bar line
@@ -1667,15 +1626,7 @@ func (pr *ProgressRenderer) clearProgress() {
 	if !pr.enabled || pr.lastLineLen == 0 {
 		return
 	}
-
-	// Default to stdout if no writer specified
-	out := pr.writer
-	if out == nil {
-		out = os.Stdout
-	}
-
-	// Clear line and move to start
-	_, _ = fmt.Fprint(out, "\r"+strings.Repeat(" ", pr.lastLineLen)+"\r")
+	_, _ = fmt.Fprint(pr.getWriter(), "\r"+strings.Repeat(" ", pr.lastLineLen)+"\r")
 	pr.lastLineLen = 0
 }
 
