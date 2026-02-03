@@ -4962,8 +4962,9 @@ func TestDetectContentTypes(t *testing.T) {
 	t.Run("empty entries", func(t *testing.T) {
 		entries := []VideoEntry{}
 		client := &http.Client{}
+		cache := make(map[string]string)
 
-		result := detectContentTypes(entries, client)
+		result := detectContentTypes(entries, client, cache)
 		if len(result) != 0 {
 			t.Errorf("expected empty map, got %d entries", len(result))
 		}
@@ -4975,8 +4976,9 @@ func TestDetectContentTypes(t *testing.T) {
 			{Link: "https://www.tiktok.com/@user/video/456", ContentType: "video"},
 		}
 		client := &http.Client{}
+		cache := make(map[string]string)
 
-		result := detectContentTypes(entries, client)
+		result := detectContentTypes(entries, client, cache)
 
 		// Should still process and return content types
 		if len(result) != 2 {
@@ -4993,11 +4995,179 @@ func TestDetectContentTypes(t *testing.T) {
 		client := &http.Client{
 			Transport: &errorTransport{err: fmt.Errorf("should not be called")},
 		}
+		cache := make(map[string]string)
 
-		result := detectContentTypes(entries, client)
+		result := detectContentTypes(entries, client, cache)
 
 		if result[entries[0].Link] != "photo" {
 			t.Errorf("expected 'photo' content type, got %q", result[entries[0].Link])
+		}
+	})
+
+	t.Run("cached entries skip network requests", func(t *testing.T) {
+		entries := []VideoEntry{
+			{Link: "https://www.tiktokv.com/share/video/111"},
+			{Link: "https://www.tiktokv.com/share/video/222"},
+		}
+
+		// Client that fails on any request - should NOT be called since all entries are cached
+		client := &http.Client{
+			Transport: &errorTransport{err: fmt.Errorf("should not be called for cached URLs")},
+		}
+
+		cache := map[string]string{
+			"https://www.tiktokv.com/share/video/111": "video",
+			"https://www.tiktokv.com/share/video/222": "photo",
+		}
+
+		result := detectContentTypes(entries, client, cache)
+
+		if result["https://www.tiktokv.com/share/video/111"] != "video" {
+			t.Errorf("expected 'video', got %q", result["https://www.tiktokv.com/share/video/111"])
+		}
+		if result["https://www.tiktokv.com/share/video/222"] != "photo" {
+			t.Errorf("expected 'photo', got %q", result["https://www.tiktokv.com/share/video/222"])
+		}
+	})
+
+	t.Run("mix of cached and uncached entries", func(t *testing.T) {
+		entries := []VideoEntry{
+			{Link: "https://www.tiktokv.com/share/video/111"},
+			{Link: "https://www.tiktok.com/@user/photo/222"},
+		}
+
+		// Client that fails - the uncached URL contains /photo/ so no network needed
+		client := &http.Client{
+			Transport: &errorTransport{err: fmt.Errorf("should not be called")},
+		}
+
+		cache := map[string]string{
+			"https://www.tiktokv.com/share/video/111": "video",
+		}
+
+		result := detectContentTypes(entries, client, cache)
+
+		if len(result) != 2 {
+			t.Errorf("expected 2 entries, got %d", len(result))
+		}
+		if result["https://www.tiktokv.com/share/video/111"] != "video" {
+			t.Errorf("expected cached 'video', got %q", result["https://www.tiktokv.com/share/video/111"])
+		}
+		if result["https://www.tiktok.com/@user/photo/222"] != "photo" {
+			t.Errorf("expected detected 'photo', got %q", result["https://www.tiktok.com/@user/photo/222"])
+		}
+	})
+}
+
+func TestContentTypeCache(t *testing.T) {
+	t.Run("load and save round-trip", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		cacheFile := filepath.Join(tmpDir, "content_types_cache.json")
+
+		original := map[string]string{
+			"https://www.tiktokv.com/share/video/111": "video",
+			"https://www.tiktokv.com/share/video/222": "photo",
+			"https://www.tiktokv.com/share/video/333": "video",
+		}
+
+		err := saveContentTypeCache(cacheFile, original)
+		if err != nil {
+			t.Fatalf("saveContentTypeCache failed: %v", err)
+		}
+
+		loaded := loadContentTypeCache(cacheFile)
+
+		if len(loaded) != len(original) {
+			t.Fatalf("expected %d entries, got %d", len(original), len(loaded))
+		}
+		for url, ct := range original {
+			if loaded[url] != ct {
+				t.Errorf("URL %s: expected %q, got %q", url, ct, loaded[url])
+			}
+		}
+	})
+
+	t.Run("load missing file returns empty map", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		cacheFile := filepath.Join(tmpDir, "nonexistent.json")
+
+		loaded := loadContentTypeCache(cacheFile)
+
+		if len(loaded) != 0 {
+			t.Errorf("expected empty map for missing file, got %d entries", len(loaded))
+		}
+	})
+
+	t.Run("load corrupt file returns empty map", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		cacheFile := filepath.Join(tmpDir, "corrupt.json")
+
+		err := os.WriteFile(cacheFile, []byte("not valid json{{{"), 0644)
+		if err != nil {
+			t.Fatalf("failed to write corrupt file: %v", err)
+		}
+
+		loaded := loadContentTypeCache(cacheFile)
+
+		if len(loaded) != 0 {
+			t.Errorf("expected empty map for corrupt file, got %d entries", len(loaded))
+		}
+	})
+
+	t.Run("load file with null types returns empty map", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		cacheFile := filepath.Join(tmpDir, "null_types.json")
+
+		err := os.WriteFile(cacheFile, []byte(`{"version":1,"types":null}`), 0644)
+		if err != nil {
+			t.Fatalf("failed to write file: %v", err)
+		}
+
+		loaded := loadContentTypeCache(cacheFile)
+
+		if loaded == nil {
+			t.Error("expected non-nil map, got nil")
+		}
+		if len(loaded) != 0 {
+			t.Errorf("expected empty map, got %d entries", len(loaded))
+		}
+	})
+
+	t.Run("save to invalid path returns error", func(t *testing.T) {
+		err := saveContentTypeCache("/nonexistent/dir/cache.json", map[string]string{"a": "b"})
+		if err == nil {
+			t.Error("expected error when saving to invalid path, got nil")
+		}
+	})
+
+	t.Run("saved file has correct JSON structure", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		cacheFile := filepath.Join(tmpDir, "cache.json")
+
+		types := map[string]string{
+			"https://example.com/1": "video",
+		}
+
+		err := saveContentTypeCache(cacheFile, types)
+		if err != nil {
+			t.Fatalf("save failed: %v", err)
+		}
+
+		data, err := os.ReadFile(cacheFile)
+		if err != nil {
+			t.Fatalf("read failed: %v", err)
+		}
+
+		var cache ContentTypeCache
+		if err := json.Unmarshal(data, &cache); err != nil {
+			t.Fatalf("unmarshal failed: %v", err)
+		}
+
+		if cache.Version != 1 {
+			t.Errorf("expected version 1, got %d", cache.Version)
+		}
+		if cache.Types["https://example.com/1"] != "video" {
+			t.Errorf("expected 'video', got %q", cache.Types["https://example.com/1"])
 		}
 	})
 }

@@ -805,21 +805,53 @@ func isPhotoPost(originalURL string, client *http.Client) (bool, string, error) 
 
 // detectContentTypes detects whether each URL is a video or photo post.
 // This is done in batches to avoid overwhelming TikTok's servers.
-// Returns a map of URL -> ContentType ("video" or "photo")
-func detectContentTypes(entries []VideoEntry, client *http.Client) map[string]string {
+// Uses the provided cache to skip network requests for already-known URLs.
+// Returns a map of URL -> ContentType ("video" or "photo") including both cached and newly detected entries.
+func detectContentTypes(entries []VideoEntry, client *http.Client, cache map[string]string) map[string]string {
 	contentTypes := make(map[string]string)
 
-	fmt.Printf("[*] Detecting content types for %d URLs...\n", len(entries))
+	// Separate cached from uncached entries
+	var uncached []VideoEntry
+	cachedCount := 0
+	for _, entry := range entries {
+		if ct, ok := cache[entry.Link]; ok {
+			contentTypes[entry.Link] = ct
+			cachedCount++
+		} else {
+			uncached = append(uncached, entry)
+		}
+	}
 
-	// Process URLs to detect photos vs videos
+	if cachedCount > 0 && len(uncached) == 0 {
+		// Count cached types for display
+		photoCount := 0
+		videoCount := 0
+		for _, ct := range contentTypes {
+			if ct == "photo" {
+				photoCount++
+			} else {
+				videoCount++
+			}
+		}
+		fmt.Printf("[*] Content types: all %d URLs cached (%d videos, %d photos)\n", cachedCount, videoCount, photoCount)
+		return contentTypes
+	}
+
+	if cachedCount > 0 {
+		fmt.Printf("[*] Content types: %d cached, %d to detect...\n", cachedCount, len(uncached))
+	} else {
+		fmt.Printf("[*] Detecting content types for %d URLs...\n", len(entries))
+	}
+
+	// Process only uncached URLs to detect photos vs videos
 	photoCount := 0
 	videoCount := 0
 	errorCount := 0
 
-	for i, entry := range entries {
+	for i, entry := range uncached {
 		// Show progress every 50 URLs
-		if (i+1)%50 == 0 || i == len(entries)-1 {
-			fmt.Printf("[*] Checking URL %d/%d...\r", i+1, len(entries))
+		if (i+1)%50 == 0 || i == len(uncached)-1 {
+			fmt.Printf("[*] Checking URL %d/%d...\r", i+1, len(uncached))
 		}
 
 		isPhoto, _, err := isPhotoPost(entry.Link, client)
@@ -849,6 +881,53 @@ func detectContentTypes(entries []VideoEntry, client *http.Client) map[string]st
 	fmt.Println()
 
 	return contentTypes
+}
+
+// ContentTypeCache represents the persistent cache for content type detection results.
+// This avoids re-detecting video vs photo for URLs on subsequent runs.
+type ContentTypeCache struct {
+	Version int               `json:"version"`
+	Types   map[string]string `json:"types"` // URL -> "video" or "photo"
+}
+
+// loadContentTypeCache reads the content type cache from disk.
+// Returns an empty cache (not error) if the file doesn't exist or is corrupt.
+func loadContentTypeCache(cacheFilePath string) map[string]string {
+	data, err := os.ReadFile(cacheFilePath)
+	if err != nil {
+		return make(map[string]string)
+	}
+
+	var cache ContentTypeCache
+	if err := json.Unmarshal(data, &cache); err != nil {
+		fmt.Printf("[!] Warning: content type cache file is corrupt, starting fresh\n")
+		return make(map[string]string)
+	}
+
+	if cache.Types == nil {
+		return make(map[string]string)
+	}
+
+	return cache.Types
+}
+
+// saveContentTypeCache writes the content type cache to disk.
+func saveContentTypeCache(cacheFilePath string, types map[string]string) error {
+	cache := ContentTypeCache{
+		Version: 1,
+		Types:   types,
+	}
+
+	data, err := json.MarshalIndent(cache, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal content type cache: %v", err)
+	}
+
+	if err := os.WriteFile(cacheFilePath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write content type cache: %v", err)
+	}
+
+	return nil
 }
 
 // parseArchiveFile reads yt-dlp's download archive file and returns
@@ -2751,8 +2830,14 @@ func main() {
 
 	// Detect content types (video vs photo) if gallery-dl is available
 	hasPhotos := false
+	cacheFilePath := "content_types_cache.json"
 	if galleryDlAvailable {
-		contentTypes := detectContentTypes(videoEntries, http.DefaultClient)
+		cache := loadContentTypeCache(cacheFilePath)
+		contentTypes := detectContentTypes(videoEntries, http.DefaultClient, cache)
+		// Save updated cache to disk
+		if err := saveContentTypeCache(cacheFilePath, contentTypes); err != nil {
+			fmt.Printf("[!] Warning: could not save content type cache: %v\n", err)
+		}
 		// Apply content types to entries
 		for i := range videoEntries {
 			if ct, ok := contentTypes[videoEntries[i].Link]; ok {
