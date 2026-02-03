@@ -1278,28 +1278,6 @@ func TestExtractVideoID(t *testing.T) {
 	}
 }
 
-// TestGetOutputFilename tests collection-specific filename generation
-func TestGetOutputFilename(t *testing.T) {
-	tests := []struct {
-		collection string
-		expected   string
-	}{
-		{"favorites", "fav_videos.txt"},
-		{"liked", "liked_videos.txt"},
-		{"other", "fav_videos.txt"},
-		{"", "fav_videos.txt"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.collection, func(t *testing.T) {
-			result := getOutputFilename(tt.collection)
-			if result != tt.expected {
-				t.Errorf("getOutputFilename(%q) = %q, want %q", tt.collection, result, tt.expected)
-			}
-		})
-	}
-}
-
 // TestParseInfoJSON tests parsing of yt-dlp info.json files
 func TestParseInfoJSON(t *testing.T) {
 	t.Run("valid info json", func(t *testing.T) {
@@ -3073,87 +3051,151 @@ func TestParseFlagsCookies(t *testing.T) {
 	})
 }
 
-// TestIsFileOlderThan30Days tests the age checking function
-func TestIsFileOlderThan30Days(t *testing.T) {
-	tmpDir := t.TempDir()
+// TestCompareVersions tests the version comparison function
+func TestCompareVersions(t *testing.T) {
+	tests := []struct {
+		name     string
+		local    string
+		remote   string
+		expected int
+	}{
+		{"equal versions", "2026.01.29", "2026.01.29", 0},
+		{"local older - year", "2025.01.29", "2026.01.29", -1},
+		{"local older - month", "2026.01.29", "2026.02.29", -1},
+		{"local older - day", "2026.01.28", "2026.01.29", -1},
+		{"local newer - year", "2026.01.29", "2025.01.29", 1},
+		{"local newer - month", "2026.02.29", "2026.01.29", 1},
+		{"local newer - day", "2026.01.30", "2026.01.29", 1},
+		{"empty local", "", "2026.01.29", -1},
+		{"empty remote", "2026.01.29", "", 1},
+		{"both empty", "", "", 0},
+	}
 
-	t.Run("file older than 30 days", func(t *testing.T) {
-		// Create a test file
-		testFile := filepath.Join(tmpDir, "old_file.txt")
-		if err := os.WriteFile(testFile, []byte("test"), 0644); err != nil {
-			t.Fatalf("failed to create test file: %v", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := compareVersions(tt.local, tt.remote)
+			if result != tt.expected {
+				t.Errorf("compareVersions(%q, %q) = %d, want %d", tt.local, tt.remote, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestGetLatestYtdlpVersion tests fetching the latest version from GitHub
+func TestGetLatestYtdlpVersion(t *testing.T) {
+	t.Run("successful redirect parsing", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/yt-dlp/yt-dlp/releases/latest" {
+				w.Header().Set("Location", "https://github.com/yt-dlp/yt-dlp/releases/tag/2026.01.29")
+				w.WriteHeader(http.StatusFound)
+				return
+			}
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer server.Close()
+
+		client := server.Client()
+		// Override the URL for testing by using a custom transport
+		originalTransport := client.Transport
+		client.Transport = &redirectTestTransport{
+			server:   server,
+			original: originalTransport,
 		}
 
-		// Set modification time to 31 days ago
-		oldTime := time.Now().AddDate(0, 0, -31)
-		if err := os.Chtimes(testFile, oldTime, oldTime); err != nil {
-			t.Fatalf("failed to set file time: %v", err)
-		}
-
-		isOld, err := isFileOlderThan30Days(testFile)
+		version, err := getLatestYtdlpVersion(client)
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
-		if !isOld {
-			t.Error("expected file to be older than 30 days")
+		if version != "2026.01.29" {
+			t.Errorf("expected version 2026.01.29, got %s", version)
 		}
 	})
 
-	t.Run("file newer than 30 days", func(t *testing.T) {
-		// Create a test file
-		testFile := filepath.Join(tmpDir, "new_file.txt")
-		if err := os.WriteFile(testFile, []byte("test"), 0644); err != nil {
-			t.Fatalf("failed to create test file: %v", err)
+	t.Run("network error", func(t *testing.T) {
+		// Create a client with a transport that always fails
+		client := &http.Client{
+			Transport: &errorTransport{err: fmt.Errorf("network unreachable")},
 		}
 
-		// Set modification time to 20 days ago
-		recentTime := time.Now().AddDate(0, 0, -20)
-		if err := os.Chtimes(testFile, recentTime, recentTime); err != nil {
-			t.Fatalf("failed to set file time: %v", err)
-		}
-
-		isOld, err := isFileOlderThan30Days(testFile)
-		if err != nil {
-			t.Errorf("unexpected error: %v", err)
-		}
-		if isOld {
-			t.Error("expected file to not be older than 30 days")
-		}
-	})
-
-	t.Run("file does not exist", func(t *testing.T) {
-		nonExistentFile := filepath.Join(tmpDir, "does_not_exist.txt")
-
-		_, err := isFileOlderThan30Days(nonExistentFile)
+		_, err := getLatestYtdlpVersion(client)
 		if err == nil {
-			t.Error("expected error for non-existent file, got nil")
+			t.Error("expected error for network failure, got nil")
 		}
 	})
 
-	t.Run("file exactly 30 days old", func(t *testing.T) {
-		testFile := filepath.Join(tmpDir, "exact_30_days.txt")
-		if err := os.WriteFile(testFile, []byte("test"), 0644); err != nil {
-			t.Fatalf("failed to create test file: %v", err)
-		}
+	t.Run("unexpected status code", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK) // Should be 302, not 200
+		}))
+		defer server.Close()
 
-		// Set modification time to exactly 30 days ago
-		// Due to timing precision, this might not be exactly before the threshold
-		exactTime := time.Now().AddDate(0, 0, -30).Add(-time.Second)
-		if err := os.Chtimes(testFile, exactTime, exactTime); err != nil {
-			t.Fatalf("failed to set file time: %v", err)
-		}
+		client := server.Client()
+		client.Transport = &redirectTestTransport{server: server}
 
-		isOld, err := isFileOlderThan30Days(testFile)
-		if err != nil {
-			t.Errorf("unexpected error: %v", err)
+		_, err := getLatestYtdlpVersion(client)
+		if err == nil {
+			t.Error("expected error for unexpected status code, got nil")
 		}
-		// File just over 30 days old should be considered old
-		if !isOld {
-			t.Error("expected file over 30 days old to be considered old")
+	})
+
+	t.Run("missing location header", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusFound) // 302 but no Location header
+		}))
+		defer server.Close()
+
+		client := server.Client()
+		client.Transport = &redirectTestTransport{server: server}
+
+		_, err := getLatestYtdlpVersion(client)
+		if err == nil {
+			t.Error("expected error for missing location header, got nil")
+		}
+	})
+
+	t.Run("invalid redirect URL format", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Location", "https://github.com/yt-dlp/yt-dlp/releases/invalid")
+			w.WriteHeader(http.StatusFound)
+		}))
+		defer server.Close()
+
+		client := server.Client()
+		client.Transport = &redirectTestTransport{server: server}
+
+		_, err := getLatestYtdlpVersion(client)
+		if err == nil {
+			t.Error("expected error for invalid URL format, got nil")
 		}
 	})
 }
 
+// redirectTestTransport rewrites GitHub URLs to use the test server
+type redirectTestTransport struct {
+	server   *httptest.Server
+	original http.RoundTripper
+}
+
+func (t *redirectTestTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	// Rewrite the URL to point to our test server
+	if strings.Contains(req.URL.Host, "github.com") {
+		req.URL.Scheme = "http"
+		req.URL.Host = strings.TrimPrefix(t.server.URL, "http://")
+	}
+	if t.original != nil {
+		return t.original.RoundTrip(req)
+	}
+	return http.DefaultTransport.RoundTrip(req)
+}
+
+// errorTransport is an http.RoundTripper that always returns an error
+type errorTransport struct {
+	err error
+}
+
+func (t *errorTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	return nil, t.err
+}
 // TestBackupYtdlp tests the backup functionality
 func TestBackupYtdlp(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -3303,72 +3345,6 @@ func TestDownloadLatestYtdlp(t *testing.T) {
 	if string(content) != "fake exe content" {
 		t.Errorf("downloaded content mismatch: got %q", content)
 	}
-}
-
-// TestGetOrDownloadYtdlpWithAgeCheck tests the complete flow including 30-day check
-func TestGetOrDownloadYtdlpWithAgeCheck(t *testing.T) {
-	tmpDir := t.TempDir()
-	oldCwd, _ := os.Getwd()
-	defer func() { _ = os.Chdir(oldCwd) }()
-
-	if err := os.Chdir(tmpDir); err != nil {
-		t.Fatalf("failed to chdir to temp dir: %v", err)
-	}
-
-	exeName := "yt-dlp.exe"
-
-	t.Run("file newer than 30 days - no prompt", func(t *testing.T) {
-		// Create a file less than 30 days old
-		if err := os.WriteFile(exeName, []byte("current version"), 0644); err != nil {
-			t.Fatalf("failed to create test file: %v", err)
-		}
-		defer func() { _ = os.Remove(exeName) }()
-
-		// Set modification time to 15 days ago
-		recentTime := time.Now().AddDate(0, 0, -15)
-		if err := os.Chtimes(exeName, recentTime, recentTime); err != nil {
-			t.Fatalf("failed to set file time: %v", err)
-		}
-
-		// Should not attempt download
-		client := http.DefaultClient
-		if err := getOrDownloadYtdlp(client, exeName); err != nil {
-			t.Errorf("unexpected error: %v", err)
-		}
-
-		// File should still exist with same content
-		content, _ := os.ReadFile(exeName)
-		if string(content) != "current version" {
-			t.Error("file was modified when it shouldn't have been")
-		}
-	})
-
-	t.Run("file older than 30 days - requires manual test for prompt", func(t *testing.T) {
-		// Note: Full testing of the prompt interaction would require mocking stdin
-		// which is complex. This test just verifies the age detection works.
-		if err := os.WriteFile(exeName, []byte("old version"), 0644); err != nil {
-			t.Fatalf("failed to create test file: %v", err)
-		}
-		defer func() { _ = os.Remove(exeName) }()
-
-		// Set modification time to 31 days ago
-		oldTime := time.Now().AddDate(0, 0, -31)
-		if err := os.Chtimes(exeName, oldTime, oldTime); err != nil {
-			t.Fatalf("failed to set file time: %v", err)
-		}
-
-		// Verify file is detected as old
-		isOld, err := isFileOlderThan30Days(exeName)
-		if err != nil {
-			t.Errorf("unexpected error: %v", err)
-		}
-		if !isOld {
-			t.Error("expected file to be detected as older than 30 days")
-		}
-
-		// Note: We can't fully test the prompt flow in automated tests
-		// because it requires stdin interaction. Manual testing required.
-	})
 }
 
 // TestParseProgressLine tests the progress line parser

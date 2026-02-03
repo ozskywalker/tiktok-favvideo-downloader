@@ -216,19 +216,6 @@ type Config struct {
 	CookieFromBrowser    string // Browser name (chrome, firefox, edge, safari, etc.)
 }
 
-// isFileOlderThan30Days checks if a file's modification time is more than 30 days old
-func isFileOlderThan30Days(path string) (bool, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return false, err
-	}
-
-	modTime := info.ModTime()
-	thirtyDaysAgo := time.Now().AddDate(0, 0, -30)
-
-	return modTime.Before(thirtyDaysAgo), nil
-}
-
 // getYtdlpVersion runs yt-dlp --version and returns the version string (e.g., "2026.01.29")
 func getYtdlpVersion(exePath string) (string, error) {
 	// Use explicit relative path for Go 1.19+ security (cannot run executables from current dir without ./)
@@ -1088,14 +1075,6 @@ func parseInfoJSON(infoPath string) (*YtdlpInfo, error) {
 		return nil, err
 	}
 	return &info, nil
-}
-
-// getOutputFilename returns the appropriate URL list filename for a collection
-func getOutputFilename(collection string) string {
-	if collection == "liked" {
-		return "liked_videos.txt"
-	}
-	return "fav_videos.txt"
 }
 
 // getVideoOutputFilename returns the video URL list filename for a collection
