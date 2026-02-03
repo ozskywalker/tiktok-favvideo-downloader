@@ -807,7 +807,7 @@ func isPhotoPost(originalURL string, client *http.Client) (bool, string, error) 
 // This is done in batches to avoid overwhelming TikTok's servers.
 // Uses the provided cache to skip network requests for already-known URLs.
 // Returns a map of URL -> ContentType ("video" or "photo") including both cached and newly detected entries.
-func detectContentTypes(entries []VideoEntry, client *http.Client, cache map[string]string) map[string]string {
+func detectContentTypes(entries []VideoEntry, client *http.Client, cache map[string]string, disableProgressBar bool) map[string]string {
 	contentTypes := make(map[string]string)
 
 	// Separate cached from uncached entries
@@ -843,15 +843,25 @@ func detectContentTypes(entries []VideoEntry, client *http.Client, cache map[str
 		fmt.Printf("[*] Detecting content types for %d URLs...\n", len(entries))
 	}
 
+	// Set up progress bar if supported and not disabled
+	useProgressBar := !disableProgressBar && supportsANSI()
+	renderer := &ProgressRenderer{
+		enabled: useProgressBar,
+	}
+
 	// Process only uncached URLs to detect photos vs videos
 	photoCount := 0
 	videoCount := 0
 	errorCount := 0
 
 	for i, entry := range uncached {
-		// Show progress every 50 URLs
-		if (i+1)%50 == 0 || i == len(uncached)-1 {
-			fmt.Printf("[*] Checking URL %d/%d...\r", i+1, len(uncached))
+		if useProgressBar {
+			renderer.renderDetectionProgress(i+1, len(uncached), videoCount, photoCount, errorCount)
+		} else {
+			// Fallback: show progress every 50 URLs
+			if (i+1)%50 == 0 || i == len(uncached)-1 {
+				fmt.Printf("[*] Checking URL %d/%d...\r", i+1, len(uncached))
+			}
 		}
 
 		isPhoto, _, err := isPhotoPost(entry.Link, client)
@@ -874,7 +884,15 @@ func detectContentTypes(entries []VideoEntry, client *http.Client, cache map[str
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	fmt.Printf("\n[*] Content type detection complete: %d videos, %d photos", videoCount, photoCount)
+	// Render final state and clear progress bar
+	if useProgressBar {
+		renderer.renderDetectionProgress(len(uncached), len(uncached), videoCount, photoCount, errorCount)
+		renderer.clearProgress()
+	} else {
+		fmt.Println()
+	}
+
+	fmt.Printf("[*] Content type detection complete: %d videos, %d photos", videoCount, photoCount)
 	if errorCount > 0 {
 		fmt.Printf(" (%d detection errors, defaulted to video)", errorCount)
 	}
@@ -1587,6 +1605,67 @@ func (pr *ProgressRenderer) renderProgress(state *ProgressState) {
 		reset,
 		red,
 		state.FailureCount,
+		reset,
+	)
+
+	// Clear previous line if it was longer
+	if len(line) < pr.lastLineLen {
+		line += strings.Repeat(" ", pr.lastLineLen-len(line))
+	}
+	pr.lastLineLen = len(line)
+
+	// Print progress (using \r to overwrite current line)
+	_, _ = fmt.Fprint(out, line)
+}
+
+// renderDetectionProgress renders a progress bar for content type detection.
+// Format: "Detecting content types (X/Y) | ████░░░ Z% | Videos: N | Photos: N | Errors: N"
+func (pr *ProgressRenderer) renderDetectionProgress(current, total, videoCount, photoCount, errorCount int) {
+	if !pr.enabled {
+		return
+	}
+
+	// Default to stdout if no writer specified
+	out := pr.writer
+	if out == nil {
+		out = os.Stdout
+	}
+
+	// Calculate percentage
+	percentage := 0.0
+	if total > 0 {
+		percentage = float64(current) / float64(total) * 100
+	}
+
+	// Create progress bar (20 characters wide)
+	barWidth := 20
+	filledWidth := int(float64(barWidth) * percentage / 100)
+	if filledWidth > barWidth {
+		filledWidth = barWidth
+	}
+
+	bar := strings.Repeat("█", filledWidth) + strings.Repeat("░", barWidth-filledWidth)
+
+	// Color codes
+	green := "\033[32m"
+	cyan := "\033[36m"
+	red := "\033[31m"
+	reset := "\033[0m"
+
+	// Build progress line
+	line := fmt.Sprintf("\rDetecting content types (%d/%d) | %s %.1f%% | %sVideos: %d%s | %sPhotos: %d%s | %sErrors: %d%s",
+		current,
+		total,
+		bar,
+		percentage,
+		green,
+		videoCount,
+		reset,
+		cyan,
+		photoCount,
+		reset,
+		red,
+		errorCount,
 		reset,
 	)
 
@@ -2833,7 +2912,7 @@ func main() {
 	cacheFilePath := "content_types_cache.json"
 	if galleryDlAvailable {
 		cache := loadContentTypeCache(cacheFilePath)
-		contentTypes := detectContentTypes(videoEntries, http.DefaultClient, cache)
+		contentTypes := detectContentTypes(videoEntries, http.DefaultClient, cache, config.DisableProgressBar)
 		// Save updated cache to disk
 		if err := saveContentTypeCache(cacheFilePath, contentTypes); err != nil {
 			fmt.Printf("[!] Warning: could not save content type cache: %v\n", err)

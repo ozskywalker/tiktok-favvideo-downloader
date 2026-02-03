@@ -3623,6 +3623,63 @@ func TestProgressRenderer(t *testing.T) {
 	})
 }
 
+// TestRenderDetectionProgress tests the detection progress bar rendering
+func TestRenderDetectionProgress(t *testing.T) {
+	t.Run("disabled renderer produces no output", func(t *testing.T) {
+		var buf bytes.Buffer
+		renderer := &ProgressRenderer{enabled: false, writer: &buf}
+
+		renderer.renderDetectionProgress(50, 100, 40, 8, 2)
+
+		if buf.Len() != 0 {
+			t.Errorf("expected no output when disabled, got %q", buf.String())
+		}
+	})
+
+	t.Run("enabled renderer writes expected format", func(t *testing.T) {
+		var buf bytes.Buffer
+		renderer := &ProgressRenderer{enabled: true, writer: &buf}
+
+		renderer.renderDetectionProgress(50, 100, 40, 8, 2)
+
+		output := buf.String()
+		if !strings.Contains(output, "Detecting content types (50/100)") {
+			t.Errorf("expected progress count in output, got %q", output)
+		}
+		if !strings.Contains(output, "50.0%%") {
+			// Check for percentage (note: Sprintf uses %% for literal %)
+			if !strings.Contains(output, "50.0%") {
+				t.Errorf("expected percentage in output, got %q", output)
+			}
+		}
+		if !strings.Contains(output, "Videos: 40") {
+			t.Errorf("expected video count in output, got %q", output)
+		}
+		if !strings.Contains(output, "Photos: 8") {
+			t.Errorf("expected photo count in output, got %q", output)
+		}
+		if !strings.Contains(output, "Errors: 2") {
+			t.Errorf("expected error count in output, got %q", output)
+		}
+	})
+
+	t.Run("progress bar fills correctly at 100%", func(t *testing.T) {
+		var buf bytes.Buffer
+		renderer := &ProgressRenderer{enabled: true, writer: &buf}
+
+		renderer.renderDetectionProgress(100, 100, 90, 10, 0)
+
+		output := buf.String()
+		if !strings.Contains(output, "100.0%") {
+			t.Errorf("expected 100%% in output, got %q", output)
+		}
+		// Should have full bar (20 filled blocks)
+		if !strings.Contains(output, strings.Repeat("█", 20)) {
+			t.Errorf("expected full progress bar, got %q", output)
+		}
+	})
+}
+
 // TestParseArchiveFile tests the parseArchiveFile function with various inputs
 func TestParseArchiveFile(t *testing.T) {
 	tests := []struct {
@@ -4964,7 +5021,7 @@ func TestDetectContentTypes(t *testing.T) {
 		client := &http.Client{}
 		cache := make(map[string]string)
 
-		result := detectContentTypes(entries, client, cache)
+		result := detectContentTypes(entries, client, cache, true)
 		if len(result) != 0 {
 			t.Errorf("expected empty map, got %d entries", len(result))
 		}
@@ -4978,7 +5035,7 @@ func TestDetectContentTypes(t *testing.T) {
 		client := &http.Client{}
 		cache := make(map[string]string)
 
-		result := detectContentTypes(entries, client, cache)
+		result := detectContentTypes(entries, client, cache, true)
 
 		// Should still process and return content types
 		if len(result) != 2 {
@@ -4997,7 +5054,7 @@ func TestDetectContentTypes(t *testing.T) {
 		}
 		cache := make(map[string]string)
 
-		result := detectContentTypes(entries, client, cache)
+		result := detectContentTypes(entries, client, cache, true)
 
 		if result[entries[0].Link] != "photo" {
 			t.Errorf("expected 'photo' content type, got %q", result[entries[0].Link])
@@ -5020,7 +5077,7 @@ func TestDetectContentTypes(t *testing.T) {
 			"https://www.tiktokv.com/share/video/222": "photo",
 		}
 
-		result := detectContentTypes(entries, client, cache)
+		result := detectContentTypes(entries, client, cache, true)
 
 		if result["https://www.tiktokv.com/share/video/111"] != "video" {
 			t.Errorf("expected 'video', got %q", result["https://www.tiktokv.com/share/video/111"])
@@ -5045,7 +5102,7 @@ func TestDetectContentTypes(t *testing.T) {
 			"https://www.tiktokv.com/share/video/111": "video",
 		}
 
-		result := detectContentTypes(entries, client, cache)
+		result := detectContentTypes(entries, client, cache, true)
 
 		if len(result) != 2 {
 			t.Errorf("expected 2 entries, got %d", len(result))
