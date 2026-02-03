@@ -2226,6 +2226,23 @@ func writeHTMLIndex(dir string, index *CollectionIndex) error {
 }
 
 // generateCollectionIndex creates JSON and HTML indexes for a collection after download.
+// scanPhotoFiles finds downloaded image files and an audio file for a photo post
+// by globbing the collection directory for files matching the video ID.
+func scanPhotoFiles(collectionDir, videoID string) (imageFiles []string, audioFile string) {
+	pattern := filepath.Join(collectionDir, fmt.Sprintf("*%s*", videoID))
+	matches, _ := filepath.Glob(pattern)
+	for _, match := range matches {
+		ext := strings.ToLower(filepath.Ext(match))
+		switch ext {
+		case ".jpg", ".jpeg", ".png", ".webp":
+			imageFiles = append(imageFiles, filepath.Base(match))
+		case ".m4a", ".mp3":
+			audioFile = filepath.Base(match)
+		}
+	}
+	return
+}
+
 // It enriches entries with metadata from yt-dlp's .info.json files and gallery-dl's .json files,
 // then generates both index.json (machine-readable) and index.html (visual browser) files.
 func generateCollectionIndex(collectionDir string, entries []VideoEntry, failures []FailureDetail) error {
@@ -2308,19 +2325,9 @@ func generateCollectionIndex(collectionDir string, entries []VideoEntry, failure
 				enrichedEntries[i].CreatorID = info.UploaderID
 				enrichedEntries[i].ImageCount = info.ImageCount
 
-				// Find downloaded image files for this photo post
-				pattern := filepath.Join(collectionDir, fmt.Sprintf("*%s*", videoID))
-				matches, _ := filepath.Glob(pattern)
-				var imageFiles []string
-				for _, match := range matches {
-					ext := strings.ToLower(filepath.Ext(match))
-					switch ext {
-					case ".jpg", ".jpeg", ".png", ".webp":
-						imageFiles = append(imageFiles, filepath.Base(match))
-					case ".m4a", ".mp3":
-						enrichedEntries[i].AudioFile = filepath.Base(match)
-					}
-				}
+				// Find downloaded image and audio files for this photo post
+				imageFiles, audioFile := scanPhotoFiles(collectionDir, videoID)
+				enrichedEntries[i].AudioFile = audioFile
 				enrichedEntries[i].ImageFiles = imageFiles
 				if len(imageFiles) > 0 {
 					enrichedEntries[i].LocalFilename = imageFiles[0]
@@ -2336,15 +2343,8 @@ func generateCollectionIndex(collectionDir string, entries []VideoEntry, failure
 				}
 			} else {
 				// No gallery-dl metadata, but try to find image files by video ID
-				pattern := filepath.Join(collectionDir, fmt.Sprintf("*%s*", videoID))
-				matches, _ := filepath.Glob(pattern)
-				var imageFiles []string
-				for _, match := range matches {
-					ext := strings.ToLower(filepath.Ext(match))
-					if ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".webp" {
-						imageFiles = append(imageFiles, filepath.Base(match))
-					}
-				}
+				imageFiles, audioFile := scanPhotoFiles(collectionDir, videoID)
+				enrichedEntries[i].AudioFile = audioFile
 				if len(imageFiles) > 0 {
 					enrichedEntries[i].ImageFiles = imageFiles
 					enrichedEntries[i].LocalFilename = imageFiles[0]
