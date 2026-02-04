@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -30,8 +31,8 @@ var (
 	}
 
 	// Pre-compiled regex patterns for parsing yt-dlp and gallery-dl output
-	ytdlpErrorPattern    = regexp.MustCompile(`ERROR:\s*\[TikTok\]\s*(\d+):\s*(.+)`)
-	progressLinePattern  = regexp.MustCompile(`\[download\] Downloading item (\d+) of (\d+)`)
+	ytdlpErrorPattern     = regexp.MustCompile(`ERROR:\s*\[TikTok\]\s*(\d+):\s*(.+)`)
+	progressLinePattern   = regexp.MustCompile(`\[download\] Downloading item (\d+) of (\d+)`)
 	gallerySuccessPattern = regexp.MustCompile(`^#\d+`)
 	galleryErrorPattern   = regexp.MustCompile(`(?i)error|failed|\[error\]`)
 	galleryVideoIDPattern = regexp.MustCompile(`(\d{19})`)
@@ -216,16 +217,15 @@ type Config struct {
 	CookieFromBrowser    string // Browser name (chrome, firefox, edge, safari, etc.)
 }
 
-
 // ToolConfig defines how to manage an external tool (yt-dlp, gallery-dl, etc.)
 type ToolConfig struct {
-	Name            string                                       // Display name (e.g., "yt-dlp")
-	ExeName         string                                       // Executable filename (e.g., "yt-dlp.exe")
-	GitHubRepo      string                                       // GitHub repo path (e.g., "yt-dlp/yt-dlp")
-	GetVersion      func(exePath string) (string, error)         // Get local version
-	CompareVersions func(local, remote string) int               // Compare versions
-	SelfUpdate      func(exePath string) error                   // Self-update command (nil if unsupported)
-	StripVPrefix    bool                                         // Strip "v" prefix from GitHub release tag
+	Name            string                               // Display name (e.g., "yt-dlp")
+	ExeName         string                               // Executable filename (e.g., "yt-dlp.exe")
+	GitHubRepo      string                               // GitHub repo path (e.g., "yt-dlp/yt-dlp")
+	GetVersion      func(exePath string) (string, error) // Get local version
+	CompareVersions func(local, remote string) int       // Compare versions
+	SelfUpdate      func(exePath string) error           // Self-update command (nil if unsupported)
+	StripVPrefix    bool                                 // Strip "v" prefix from GitHub release tag
 }
 
 // backupExe backs up the current executable to .old
@@ -597,21 +597,22 @@ func isPhotoPost(originalURL string, client *http.Client) (bool, string, error) 
 	// Set a user agent to avoid blocks
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 
-	// Use the injected client but configure redirect handling to capture the final URL
-	// Save original redirect policy and restore after
-	originalCheckRedirect := client.CheckRedirect
+	// Create a per-request client to avoid mutating the shared client's CheckRedirect.
+	// This is safe for concurrent use since each goroutine gets its own client.
 	var finalURL string
-	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		finalURL = req.URL.String()
-		// Allow up to 10 redirects
-		if len(via) >= 10 {
-			return fmt.Errorf("too many redirects")
-		}
-		return nil
+	perRequestClient := &http.Client{
+		Transport: client.Transport,
+		Timeout:   15 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			finalURL = req.URL.String()
+			if len(via) >= 10 {
+				return fmt.Errorf("too many redirects")
+			}
+			return nil
+		},
 	}
-	defer func() { client.CheckRedirect = originalCheckRedirect }()
 
-	resp, err := client.Do(req)
+	resp, err := perRequestClient.Do(req)
 	if err != nil {
 		// If we got a final URL from redirects before the error, use it
 		if finalURL != "" && strings.Contains(finalURL, "/photo/") {
@@ -629,6 +630,13 @@ func isPhotoPost(originalURL string, client *http.Client) (bool, string, error) 
 	// Check if the final URL contains /photo/
 	isPhoto := strings.Contains(finalURL, "/photo/")
 	return isPhoto, finalURL, nil
+}
+
+// detectionResult holds the result of detecting whether a URL is a video or photo.
+type detectionResult struct {
+	url         string
+	contentType string
+	err         error
 }
 
 // detectContentTypes detects whether each URL is a video or photo post.
@@ -671,45 +679,87 @@ func detectContentTypes(entries []VideoEntry, client *http.Client, cache map[str
 		fmt.Printf("[*] Detecting content types for %d URLs...\n", len(entries))
 	}
 
+	if len(uncached) == 0 {
+		return contentTypes
+	}
+
 	// Set up progress bar if supported and not disabled
 	useProgressBar := !disableProgressBar && supportsANSI()
 	renderer := &ProgressRenderer{
 		enabled: useProgressBar,
 	}
 
-	// Process only uncached URLs to detect photos vs videos
+	// Process uncached URLs using a worker pool.
+	// 10 workers share a rate limiter ticker at 50ms. Each tick is consumed by exactly
+	// one worker (Go channel semantics), capping the aggregate rate at 20 req/s.
 	photoCount := 0
 	videoCount := 0
 	errorCount := 0
+	processed := 0
 
-	for i, entry := range uncached {
-		if useProgressBar {
-			renderer.renderDetectionProgress(i+1, len(uncached), videoCount, photoCount, errorCount)
-		} else {
-			// Fallback: show progress every 50 URLs
-			if (i+1)%50 == 0 || i == len(uncached)-1 {
-				fmt.Printf("[*] Checking URL %d/%d...\r", i+1, len(uncached))
+	const numWorkers = 10
+	jobs := make(chan VideoEntry, numWorkers*2)
+	results := make(chan detectionResult, numWorkers*2)
+
+	rateLimiter := time.NewTicker(50 * time.Millisecond)
+	defer rateLimiter.Stop()
+
+	// Launch workers
+	var wg sync.WaitGroup
+	for w := 0; w < numWorkers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for entry := range jobs {
+				<-rateLimiter.C
+
+				isPhoto, _, err := isPhotoPost(entry.Link, client)
+				if err != nil {
+					results <- detectionResult{url: entry.Link, contentType: "video", err: err}
+					continue
+				}
+				ct := "video"
+				if isPhoto {
+					ct = "photo"
+				}
+				results <- detectionResult{url: entry.Link, contentType: ct}
 			}
-		}
+		}()
+	}
 
-		isPhoto, _, err := isPhotoPost(entry.Link, client)
-		if err != nil {
-			// On error, default to video (yt-dlp will handle it)
-			contentTypes[entry.Link] = "video"
+	// Send jobs
+	go func() {
+		for _, entry := range uncached {
+			jobs <- entry
+		}
+		close(jobs)
+	}()
+
+	// Close results channel when all workers finish
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	// Collect results from a single goroutine (no mutex needed for contentTypes or progress)
+	for result := range results {
+		contentTypes[result.url] = result.contentType
+		if result.err != nil {
 			errorCount++
-			continue
-		}
-
-		if isPhoto {
-			contentTypes[entry.Link] = "photo"
+		} else if result.contentType == "photo" {
 			photoCount++
 		} else {
-			contentTypes[entry.Link] = "video"
 			videoCount++
 		}
+		processed++
 
-		// Small delay to avoid rate limiting (100ms between requests)
-		time.Sleep(100 * time.Millisecond)
+		if useProgressBar {
+			renderer.renderDetectionProgress(processed, len(uncached), videoCount, photoCount, errorCount)
+		} else {
+			if processed%50 == 0 || processed == len(uncached) {
+				fmt.Printf("[*] Checking URL %d/%d...\r", processed, len(uncached))
+			}
+		}
 	}
 
 	// Render final state and clear progress bar

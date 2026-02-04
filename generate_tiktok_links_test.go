@@ -10,7 +10,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -702,13 +704,13 @@ func TestGetOrDownloadYtdlpErrorScenarios(t *testing.T) {
 			}
 
 			err = getOrDownloadTool(customClient, &ToolConfig{
-		Name:            "yt-dlp",
-		ExeName:         "yt-dlp.exe",
-		GitHubRepo:      "yt-dlp/yt-dlp",
-		GetVersion:      getYtdlpVersion,
-		CompareVersions: compareVersions,
-		SelfUpdate:      updateYtdlp,
-	})
+				Name:            "yt-dlp",
+				ExeName:         "yt-dlp.exe",
+				GitHubRepo:      "yt-dlp/yt-dlp",
+				GetVersion:      getYtdlpVersion,
+				CompareVersions: compareVersions,
+				SelfUpdate:      updateYtdlp,
+			})
 			if tt.expectError && err == nil {
 				t.Error("expected error but got none")
 			} else if !tt.expectError && err != nil {
@@ -4528,6 +4530,54 @@ func TestIsPhotoPost(t *testing.T) {
 			t.Errorf("expected finalURL to contain /photo/, got %q", finalURL)
 		}
 	})
+
+	t.Run("concurrent calls are race-free", func(t *testing.T) {
+		// Verify that isPhotoPost can be called concurrently on the same
+		// *http.Client without data races (requires -race flag to verify).
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Alternate between photo and video redirects based on a query param
+			if r.URL.Query().Get("type") == "photo" {
+				http.Redirect(w, r, "https://www.tiktok.com/@user/photo/"+r.URL.Query().Get("id"), http.StatusFound)
+			} else {
+				http.Redirect(w, r, "https://www.tiktok.com/@user/video/"+r.URL.Query().Get("id"), http.StatusFound)
+			}
+		}))
+		defer server.Close()
+
+		client := server.Client()
+
+		const goroutines = 50
+		var wg sync.WaitGroup
+		wg.Add(goroutines)
+		errs := make(chan error, goroutines)
+
+		for i := 0; i < goroutines; i++ {
+			go func(idx int) {
+				defer wg.Done()
+				urlType := "video"
+				if idx%2 == 0 {
+					urlType = "photo"
+				}
+				url := server.URL + "?type=" + urlType + "&id=" + strconv.Itoa(idx)
+				isPhoto, _, err := isPhotoPost(url, client)
+				if err != nil {
+					errs <- fmt.Errorf("goroutine %d: unexpected error: %v", idx, err)
+					return
+				}
+				if urlType == "photo" && !isPhoto {
+					errs <- fmt.Errorf("goroutine %d: expected photo, got video", idx)
+				} else if urlType == "video" && isPhoto {
+					errs <- fmt.Errorf("goroutine %d: expected video, got photo", idx)
+				}
+			}(i)
+		}
+
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			t.Error(err)
+		}
+	})
 }
 
 // TestGetOrDownloadGalleryDl tests the gallery-dl download function
@@ -4556,13 +4606,13 @@ func TestGetOrDownloadGalleryDl(t *testing.T) {
 		// Should return nil when file exists (won't check version since it's a dummy)
 		client := http.DefaultClient
 		err = getOrDownloadTool(client, &ToolConfig{
-		Name:            "gallery-dl",
-		ExeName:         "gallery-dl.exe",
-		GitHubRepo:      "mikf/gallery-dl",
-		GetVersion:      getGalleryDlVersion,
-		CompareVersions: compareGalleryDlVersions,
-		StripVPrefix:    true,
-	})
+			Name:            "gallery-dl",
+			ExeName:         "gallery-dl.exe",
+			GitHubRepo:      "mikf/gallery-dl",
+			GetVersion:      getGalleryDlVersion,
+			CompareVersions: compareGalleryDlVersions,
+			StripVPrefix:    true,
+		})
 		if err != nil {
 			t.Errorf("expected nil error when file exists, got: %v", err)
 		}
@@ -4617,13 +4667,13 @@ func TestGetOrDownloadGalleryDl(t *testing.T) {
 		}
 
 		err = getOrDownloadTool(customClient, &ToolConfig{
-		Name:            "gallery-dl",
-		ExeName:         "gallery-dl.exe",
-		GitHubRepo:      "mikf/gallery-dl",
-		GetVersion:      getGalleryDlVersion,
-		CompareVersions: compareGalleryDlVersions,
-		StripVPrefix:    true,
-	})
+			Name:            "gallery-dl",
+			ExeName:         "gallery-dl.exe",
+			GitHubRepo:      "mikf/gallery-dl",
+			GetVersion:      getGalleryDlVersion,
+			CompareVersions: compareGalleryDlVersions,
+			StripVPrefix:    true,
+		})
 		if err != nil {
 			t.Errorf("expected nil error on download, got: %v", err)
 		}
@@ -4672,13 +4722,13 @@ func TestGetOrDownloadGalleryDl(t *testing.T) {
 		}
 
 		err = getOrDownloadTool(customClient, &ToolConfig{
-		Name:            "gallery-dl",
-		ExeName:         "gallery-dl.exe",
-		GitHubRepo:      "mikf/gallery-dl",
-		GetVersion:      getGalleryDlVersion,
-		CompareVersions: compareGalleryDlVersions,
-		StripVPrefix:    true,
-	})
+			Name:            "gallery-dl",
+			ExeName:         "gallery-dl.exe",
+			GitHubRepo:      "mikf/gallery-dl",
+			GetVersion:      getGalleryDlVersion,
+			CompareVersions: compareGalleryDlVersions,
+			StripVPrefix:    true,
+		})
 		if err == nil {
 			t.Error("expected error when asset not found")
 		}
@@ -5004,28 +5054,13 @@ func TestDetectContentTypes(t *testing.T) {
 		}
 	})
 
-	t.Run("entries already typed", func(t *testing.T) {
-		entries := []VideoEntry{
-			{Link: "https://www.tiktok.com/@user/photo/123", ContentType: "photo"},
-			{Link: "https://www.tiktok.com/@user/video/456", ContentType: "video"},
-		}
-		client := &http.Client{}
-		cache := make(map[string]string)
-
-		result := detectContentTypes(entries, client, cache, true)
-
-		// Should still process and return content types
-		if len(result) != 2 {
-			t.Errorf("expected 2 entries, got %d", len(result))
-		}
-	})
-
-	t.Run("URL with /photo/ detected without network", func(t *testing.T) {
+	t.Run("photo URL in path detected without network", func(t *testing.T) {
+		// isPhotoPost returns true immediately for URLs containing /photo/ —
+		// no HTTP request needed. Only /photo/ URLs get the early return;
+		// /video/ URLs still require a network call to follow redirects.
 		entries := []VideoEntry{
 			{Link: "https://www.tiktok.com/@user/photo/123"},
 		}
-
-		// Use a client that fails on any request - shouldn't be called for /photo/ URLs
 		client := &http.Client{
 			Transport: &errorTransport{err: fmt.Errorf("should not be called")},
 		}
@@ -5033,8 +5068,11 @@ func TestDetectContentTypes(t *testing.T) {
 
 		result := detectContentTypes(entries, client, cache, true)
 
-		if result[entries[0].Link] != "photo" {
-			t.Errorf("expected 'photo' content type, got %q", result[entries[0].Link])
+		if len(result) != 1 {
+			t.Errorf("expected 1 entry, got %d", len(result))
+		}
+		if result["https://www.tiktok.com/@user/photo/123"] != "photo" {
+			t.Errorf("expected 'photo', got %q", result["https://www.tiktok.com/@user/photo/123"])
 		}
 	})
 
@@ -5061,6 +5099,46 @@ func TestDetectContentTypes(t *testing.T) {
 		}
 		if result["https://www.tiktokv.com/share/video/222"] != "photo" {
 			t.Errorf("expected 'photo', got %q", result["https://www.tiktokv.com/share/video/222"])
+		}
+	})
+
+	t.Run("redirect-based detection through worker pool", func(t *testing.T) {
+		// Integration test: exercises the full worker pool with actual HTTP redirects.
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/short/1":
+				http.Redirect(w, r, "https://www.tiktok.com/@user/photo/1001", http.StatusFound)
+			case "/short/2":
+				http.Redirect(w, r, "https://www.tiktok.com/@user/video/1002", http.StatusFound)
+			case "/short/3":
+				http.Redirect(w, r, "https://www.tiktok.com/@user/photo/1003", http.StatusFound)
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		}))
+		defer server.Close()
+
+		entries := []VideoEntry{
+			{Link: server.URL + "/short/1"},
+			{Link: server.URL + "/short/2"},
+			{Link: server.URL + "/short/3"},
+		}
+		client := server.Client()
+		cache := make(map[string]string)
+
+		result := detectContentTypes(entries, client, cache, true)
+
+		if len(result) != 3 {
+			t.Fatalf("expected 3 entries, got %d", len(result))
+		}
+		if result[entries[0].Link] != "photo" {
+			t.Errorf("entry 0: expected 'photo', got %q", result[entries[0].Link])
+		}
+		if result[entries[1].Link] != "video" {
+			t.Errorf("entry 1: expected 'video', got %q", result[entries[1].Link])
+		}
+		if result[entries[2].Link] != "photo" {
+			t.Errorf("entry 2: expected 'photo', got %q", result[entries[2].Link])
 		}
 	})
 
