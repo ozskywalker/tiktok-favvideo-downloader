@@ -25,11 +25,19 @@ var (
 	// Pre-compiled regex patterns for extracting video IDs from TikTok URLs
 	videoIDPatterns = []*regexp.Regexp{
 		regexp.MustCompile(`/video/(\d+)`),
+		regexp.MustCompile(`/photo/(\d+)`),
 		regexp.MustCompile(`/v/(\d+)`),
 	}
+
+	// Pre-compiled regex patterns for parsing yt-dlp and gallery-dl output
+	ytdlpErrorPattern     = regexp.MustCompile(`ERROR:\s*\[TikTok\]\s*(\d+):\s*(.+)`)
+	progressLinePattern   = regexp.MustCompile(`\[download\] Downloading item (\d+) of (\d+)`)
+	gallerySuccessPattern = regexp.MustCompile(`^#\d+`)
+	galleryErrorPattern   = regexp.MustCompile(`(?i)error|failed|\[error\]`)
+	galleryVideoIDPattern = regexp.MustCompile(`(\d{19})`)
 )
 
-// VideoEntry represents a video with its collection information and metadata
+// VideoEntry represents a video or photo with its collection information and metadata
 type VideoEntry struct {
 	// From TikTok JSON export
 	Link       string `json:"link"`
@@ -37,23 +45,29 @@ type VideoEntry struct {
 	Collection string `json:"collection"`     // "favorites" or "liked"
 
 	// Derived from URL
-	VideoID string `json:"video_id"`
+	VideoID     string `json:"video_id"`
+	ContentType string `json:"content_type,omitempty"` // "video" or "photo" (detected at download time)
 
-	// From yt-dlp metadata (populated after download)
+	// From yt-dlp/gallery-dl metadata (populated after download)
 	Title         string `json:"title,omitempty"`
 	Creator       string `json:"creator,omitempty"`
 	CreatorID     string `json:"creator_id,omitempty"`
 	UploadDate    string `json:"upload_date,omitempty"`
 	Description   string `json:"description,omitempty"`
-	Duration      int    `json:"duration,omitempty"`
+	Duration      int    `json:"duration,omitempty"` // 0 for photos
 	ViewCount     int64  `json:"view_count,omitempty"`
 	LikeCount     int64  `json:"like_count,omitempty"`
 	ThumbnailURL  string `json:"thumbnail_url,omitempty"`
 	ThumbnailFile string `json:"thumbnail_file,omitempty"`
 
+	// Photo-specific fields
+	ImageCount int      `json:"image_count,omitempty"` // Number of images in slideshow
+	ImageFiles []string `json:"image_files,omitempty"` // List of local image filenames
+	AudioFile  string   `json:"audio_file,omitempty"`  // Audio track filename (for slideshows)
+
 	// Download status
 	Downloaded    bool   `json:"downloaded"`
-	LocalFilename string `json:"local_filename,omitempty"`
+	LocalFilename string `json:"local_filename,omitempty"` // For videos; first image for photos
 	DownloadError string `json:"download_error,omitempty"`
 }
 
@@ -98,11 +112,16 @@ type DownloadSession struct {
 	TotalSuccess   int
 	TotalFailed    int
 	TotalSkipped   int
+	// Photo-specific tracking
+	TotalPhotosAttempted int
+	TotalPhotosSuccess   int
+	TotalPhotosFailed    int
 }
 
 // CollectionResult tracks results for a single collection
 type CollectionResult struct {
 	Name           string
+	ContentType    string // "video", "photo", or "" (legacy/mixed)
 	Attempted      int
 	Success        int
 	Failed         int
@@ -116,6 +135,7 @@ type FailureDetail struct {
 	VideoURL     string
 	ErrorMessage string
 	ErrorType    ErrorType
+	ContentType  string // "video" or "photo"
 }
 
 // ErrorType categorizes common error types
@@ -196,39 +216,19 @@ type Config struct {
 	CookieFromBrowser    string // Browser name (chrome, firefox, edge, safari, etc.)
 }
 
-// isFileOlderThan30Days checks if a file's modification time is more than 30 days old
-func isFileOlderThan30Days(path string) (bool, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return false, err
-	}
-
-	modTime := info.ModTime()
-	thirtyDaysAgo := time.Now().AddDate(0, 0, -30)
-
-	return modTime.Before(thirtyDaysAgo), nil
+// ToolConfig defines how to manage an external tool (yt-dlp, gallery-dl, etc.)
+type ToolConfig struct {
+	Name            string                               // Display name (e.g., "yt-dlp")
+	ExeName         string                               // Executable filename (e.g., "yt-dlp.exe")
+	GitHubRepo      string                               // GitHub repo path (e.g., "yt-dlp/yt-dlp")
+	GetVersion      func(exePath string) (string, error) // Get local version
+	CompareVersions func(local, remote string) int       // Compare versions
+	SelfUpdate      func(exePath string) error           // Self-update command (nil if unsupported)
+	StripVPrefix    bool                                 // Strip "v" prefix from GitHub release tag
 }
 
-// promptForUpdate asks the user if they want to update yt-dlp.exe
-// Returns true if user wants to update (default is yes)
-func promptForUpdate() bool {
-	fmt.Print("[*] A newer version of yt-dlp may be available. Would you like to download it? (Y/n, default is 'Y'): ")
-
-	scanner := bufio.NewScanner(os.Stdin)
-	scanner.Scan()
-	input := strings.TrimSpace(strings.ToLower(scanner.Text()))
-
-	// Default to yes if input is empty or explicitly yes
-	if input == "" || input == "y" || input == "yes" {
-		return true
-	}
-
-	return false
-}
-
-// backupYtdlp backs up the current yt-dlp.exe to yt-dlp.exe.old
-// Deletes existing .old file if it exists
-func backupYtdlp(exeName string) error {
+// backupExe backs up the current executable to .old
+func backupExe(exeName string) error {
 	oldFileName := exeName + ".old"
 
 	// Delete existing .old file if it exists
@@ -248,12 +248,11 @@ func backupYtdlp(exeName string) error {
 	return nil
 }
 
-// downloadLatestYtdlp downloads the latest version of yt-dlp from GitHub
-func downloadLatestYtdlp(client *http.Client, exeName string) error {
-	fmt.Printf("[*] Downloading the latest release from GitHub...\n")
+// downloadLatestRelease downloads the latest version of a tool from GitHub releases
+func downloadLatestRelease(client *http.Client, tool *ToolConfig) error {
+	fmt.Printf("[*] Downloading the latest %s release from GitHub...\n", tool.Name)
 
-	// 1. Retrieve the latest release info from GitHub
-	releaseURL := "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest"
+	releaseURL := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", tool.GitHubRepo)
 	resp, err := client.Get(releaseURL)
 	if err != nil {
 		return fmt.Errorf("failed to fetch the latest release info: %v", err)
@@ -270,90 +269,245 @@ func downloadLatestYtdlp(client *http.Client, exeName string) error {
 		return fmt.Errorf("failed to parse GitHub API release JSON: %v", err)
 	}
 
-	// 2. Find the asset with name "yt-dlp.exe"
 	var downloadURL string
 	for _, asset := range release.Assets {
-		if strings.EqualFold(asset.Name, exeName) {
+		if strings.EqualFold(asset.Name, tool.ExeName) {
 			downloadURL = asset.BrowserDownloadURL
 			break
 		}
 	}
 	if downloadURL == "" {
-		return fmt.Errorf("could not find %s in the latest release assets", exeName)
+		return fmt.Errorf("could not find %s in the latest release assets", tool.ExeName)
 	}
 
 	fmt.Printf("[*] Downloading %s...\n", downloadURL)
 
-	// 3. Download the file
-	out, err := os.Create(exeName)
+	out, err := os.Create(tool.ExeName)
 	if err != nil {
-		return fmt.Errorf("error creating %s: %v", exeName, err)
+		return fmt.Errorf("error creating %s: %v", tool.ExeName, err)
 	}
 	defer func() { _ = out.Close() }()
 
 	downloadResp, err := client.Get(downloadURL)
 	if err != nil {
-		return fmt.Errorf("failed to download %s: %v", exeName, err)
+		return fmt.Errorf("failed to download %s: %v", tool.ExeName, err)
 	}
 	defer func() { _ = downloadResp.Body.Close() }()
 
-	// 4. Copy the response body to the file
 	if _, err := io.Copy(out, downloadResp.Body); err != nil {
-		return fmt.Errorf("failed to write %s to disk: %v", exeName, err)
+		return fmt.Errorf("failed to write %s to disk: %v", tool.ExeName, err)
 	}
 
-	fmt.Println("[*] Successfully downloaded yt-dlp")
+	fmt.Printf("[*] Successfully downloaded %s\n", tool.Name)
 	return nil
 }
 
-// getOrDownloadYtdlp checks if yt-dlp.exe is present in the current directory.
-// If not, it downloads the latest version from GitHub.
-// If it exists but is older than 30 days, prompts user to update.
-// Accepts an *http.Client so we can mock the download in tests.
-func getOrDownloadYtdlp(client *http.Client, exeName string) error {
-	// Check if the file already exists
-	if _, err := os.Stat(exeName); err == nil {
-		// File exists - check if it's older than 30 days
-		isOld, err := isFileOlderThan30Days(exeName)
+// getLatestVersion fetches the latest version of a tool from GitHub releases
+func getLatestVersion(client *http.Client, tool *ToolConfig) (string, error) {
+	checkRedirect := client.CheckRedirect
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	defer func() { client.CheckRedirect = checkRedirect }()
+
+	url := fmt.Sprintf("https://github.com/%s/releases/latest", tool.GitHubRepo)
+	resp, err := client.Get(url)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch GitHub releases: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusFound && resp.StatusCode != http.StatusMovedPermanently {
+		return "", fmt.Errorf("unexpected response status: %d", resp.StatusCode)
+	}
+
+	location := resp.Header.Get("Location")
+	if location == "" {
+		return "", fmt.Errorf("no redirect location in response")
+	}
+
+	parts := strings.Split(location, "/tag/")
+	if len(parts) != 2 {
+		return "", fmt.Errorf("unexpected redirect URL format: %s", location)
+	}
+
+	version := strings.TrimSpace(parts[1])
+	if tool.StripVPrefix {
+		version = strings.TrimPrefix(version, "v")
+	}
+	if version == "" {
+		return "", fmt.Errorf("empty version in redirect URL")
+	}
+
+	return version, nil
+}
+
+// getOrDownloadTool checks if a tool is present, offers updates, or downloads it
+func getOrDownloadTool(client *http.Client, tool *ToolConfig) error {
+	if _, err := os.Stat(tool.ExeName); err == nil {
+		localVersion, err := tool.GetVersion(tool.ExeName)
 		if err != nil {
-			fmt.Printf("[!] Warning: Could not check file age: %v\n", err)
-			fmt.Printf("[*] Found %s in the current directory. Continuing with existing version.\n", exeName)
+			fmt.Printf("[!] Warning: Could not get local %s version: %v\n", tool.Name, err)
+			fmt.Printf("[*] Found %s in the current directory. Continuing with existing version.\n", tool.ExeName)
 			return nil
 		}
 
-		if isOld {
-			// Prompt user for update
+		latestVersion, err := getLatestVersion(client, tool)
+		if err != nil {
+			fmt.Printf("[!] Warning: Could not check for %s updates: %v\n", tool.Name, err)
+			fmt.Printf("[*] Found %s (version %s). Continuing with existing version.\n", tool.ExeName, localVersion)
+			return nil
+		}
+
+		if tool.CompareVersions(localVersion, latestVersion) < 0 {
+			fmt.Printf("[*] %s: Current version: %s, Latest version: %s\n", tool.Name, localVersion, latestVersion)
 			if promptForUpdate() {
-				// User wants to update - backup current version
-				if err := backupYtdlp(exeName); err != nil {
+				// Try self-update first if supported
+				if tool.SelfUpdate != nil {
+					if err := tool.SelfUpdate(tool.ExeName); err != nil {
+						fmt.Printf("[!] Self-update failed: %v\n", err)
+						fmt.Printf("[*] Trying manual download as fallback...\n")
+					} else {
+						return nil
+					}
+				}
+
+				// Manual download (backup + download)
+				if err := backupExe(tool.ExeName); err != nil {
 					return fmt.Errorf("backup failed: %v", err)
 				}
 
-				// Download new version
-				if err := downloadLatestYtdlp(client, exeName); err != nil {
-					// Download failed - try to restore backup
+				if err := downloadLatestRelease(client, tool); err != nil {
 					fmt.Printf("[!] Download failed: %v\n", err)
 					fmt.Printf("[*] Attempting to restore backup...\n")
-					if restoreErr := os.Rename(exeName+".old", exeName); restoreErr != nil {
+					if restoreErr := os.Rename(tool.ExeName+".old", tool.ExeName); restoreErr != nil {
 						return fmt.Errorf("download failed and could not restore backup: %v (restore error: %v)", err, restoreErr)
 					}
 					fmt.Printf("[*] Backup restored. Continuing with existing version.\n")
 					return nil
 				}
 			} else {
-				fmt.Printf("[*] Continuing with existing %s.\n", exeName)
+				fmt.Printf("[*] Continuing with existing %s (version %s).\n", tool.ExeName, localVersion)
 			}
 		} else {
-			fmt.Printf("[*] Found %s in the current directory. Skipping download.\n", exeName)
+			fmt.Printf("[*] Found %s (version %s) - up to date.\n", tool.ExeName, localVersion)
 		}
 		return nil
 	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("error checking for existing %s: %v", exeName, err)
+		return fmt.Errorf("error checking for existing %s: %v", tool.ExeName, err)
 	}
 
-	// File doesn't exist - download it
-	fmt.Printf("[*] %s not found. Downloading the latest release from GitHub...\n", exeName)
-	return downloadLatestYtdlp(client, exeName)
+	fmt.Printf("[*] %s not found. Downloading the latest release from GitHub...\n", tool.ExeName)
+	return downloadLatestRelease(client, tool)
+}
+
+// getYtdlpVersion runs yt-dlp --version and returns the version string (e.g., "2026.01.29")
+func getYtdlpVersion(exePath string) (string, error) {
+	// Use explicit relative path for Go 1.19+ security (cannot run executables from current dir without ./)
+	cmd := exec.Command("."+string(filepath.Separator)+exePath, "--version")
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("failed to run %s --version: %v", exePath, err)
+	}
+	version := strings.TrimSpace(string(output))
+	if version == "" {
+		return "", fmt.Errorf("yt-dlp --version returned empty output")
+	}
+	return version, nil
+}
+
+// compareVersions compares two yt-dlp version strings in YYYY.MM.DD format
+// Returns: -1 if local < remote (needs update), 0 if equal, 1 if local > remote
+func compareVersions(local, remote string) int {
+	// Parse versions - yt-dlp uses YYYY.MM.DD format
+	// Simple string comparison works since format is consistent and zero-padded
+	if local == remote {
+		return 0
+	}
+	if local < remote {
+		return -1
+	}
+	return 1
+}
+
+// updateYtdlp runs yt-dlp --update to self-update the binary
+func updateYtdlp(exePath string) error {
+	fmt.Println("[*] Running yt-dlp --update...")
+	// Use explicit relative path for Go 1.19+ security
+	cmd := exec.Command("."+string(filepath.Separator)+exePath, "--update")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("yt-dlp --update failed: %v", err)
+	}
+	return nil
+}
+
+// promptForUpdate asks the user if they want to update yt-dlp.exe
+// Returns true if user wants to update (default is yes)
+func promptForUpdate() bool {
+	fmt.Print("[*] A newer version of yt-dlp may be available. Would you like to download it? (Y/n, default is 'Y'): ")
+
+	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Scan()
+	input := strings.TrimSpace(strings.ToLower(scanner.Text()))
+
+	// Default to yes if input is empty or explicitly yes
+	if input == "" || input == "y" || input == "yes" {
+		return true
+	}
+
+	return false
+}
+
+// getGalleryDlVersion runs gallery-dl --version and returns the version string
+func getGalleryDlVersion(exePath string) (string, error) {
+	// Use explicit relative path for Go 1.19+ security
+	cmd := exec.Command("."+string(filepath.Separator)+exePath, "--version")
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("failed to run %s --version: %v", exePath, err)
+	}
+	// gallery-dl outputs "gallery-dl X.Y.Z" so extract version number
+	version := strings.TrimSpace(string(output))
+	// Parse "gallery-dl X.Y.Z" format
+	parts := strings.Fields(version)
+	if len(parts) >= 2 {
+		return parts[len(parts)-1], nil
+	}
+	if version == "" {
+		return "", fmt.Errorf("gallery-dl --version returned empty output")
+	}
+	return version, nil
+}
+
+// compareGalleryDlVersions compares two gallery-dl version strings in X.Y.Z format
+// Returns: -1 if local < remote (needs update), 0 if equal, 1 if local > remote
+func compareGalleryDlVersions(local, remote string) int {
+	// Parse semantic versions (X.Y.Z format)
+	localParts := strings.Split(local, ".")
+	remoteParts := strings.Split(remote, ".")
+
+	// Compare each component numerically
+	for i := 0; i < len(localParts) && i < len(remoteParts); i++ {
+		l, _ := strconv.Atoi(localParts[i])
+		r, _ := strconv.Atoi(remoteParts[i])
+		if l < r {
+			return -1
+		}
+		if l > r {
+			return 1
+		}
+	}
+
+	// If all compared parts are equal, longer version is greater
+	if len(localParts) < len(remoteParts) {
+		return -1
+	}
+	if len(localParts) > len(remoteParts) {
+		return 1
+	}
+	return 0
 }
 
 // parseFavoriteVideosFromFile reads the given JSON file and returns the list of video entries.
@@ -413,6 +567,7 @@ func sanitizeCollectionName(name string) string {
 // Supports various TikTok URL formats:
 //   - https://www.tiktokv.com/share/video/7600559584901647646/
 //   - https://www.tiktok.com/@user/video/7600559584901647646
+//   - https://www.tiktok.com/@user/photo/7600559584901647646
 //   - https://m.tiktok.com/v/7600559584901647646.html
 func extractVideoID(url string) string {
 	for _, re := range videoIDPatterns {
@@ -421,6 +576,53 @@ func extractVideoID(url string) string {
 		}
 	}
 	return ""
+}
+
+// ContentTypeCache represents the persistent cache for content type detection results.
+// This avoids re-detecting video vs photo for URLs on subsequent runs.
+type ContentTypeCache struct {
+	Version int               `json:"version"`
+	Types   map[string]string `json:"types"` // URL -> "video" or "photo"
+}
+
+// loadContentTypeCache reads the content type cache from disk.
+// Returns an empty cache (not error) if the file doesn't exist or is corrupt.
+func loadContentTypeCache(cacheFilePath string) map[string]string {
+	data, err := os.ReadFile(cacheFilePath)
+	if err != nil {
+		return make(map[string]string)
+	}
+
+	var cache ContentTypeCache
+	if err := json.Unmarshal(data, &cache); err != nil {
+		fmt.Printf("[!] Warning: content type cache file is corrupt, starting fresh\n")
+		return make(map[string]string)
+	}
+
+	if cache.Types == nil {
+		return make(map[string]string)
+	}
+
+	return cache.Types
+}
+
+// saveContentTypeCache writes the content type cache to disk.
+func saveContentTypeCache(cacheFilePath string, types map[string]string) error {
+	cache := ContentTypeCache{
+		Version: 1,
+		Types:   types,
+	}
+
+	data, err := json.MarshalIndent(cache, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal content type cache: %v", err)
+	}
+
+	if err := os.WriteFile(cacheFilePath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write content type cache: %v", err)
+	}
+
+	return nil
 }
 
 // parseArchiveFile reads yt-dlp's download archive file and returns
@@ -545,6 +747,113 @@ func shouldSkipCollection(entries []VideoEntry, archivePath string) (bool, strin
 	return false, msg, nil
 }
 
+// identifyFailedEntries compares the download archive before and after a yt-dlp run
+// to determine which entries succeeded (newly downloaded), which were already downloaded,
+// and which failed (not in archive after run).
+func identifyFailedEntries(entries []VideoEntry, archiveBefore, archiveAfter map[string]bool) (succeeded, alreadyDownloaded, failed []VideoEntry) {
+	for _, entry := range entries {
+		videoID := extractVideoID(entry.Link)
+		if videoID == "" {
+			failed = append(failed, entry)
+			continue
+		}
+		if archiveBefore[videoID] {
+			alreadyDownloaded = append(alreadyDownloaded, entry)
+		} else if archiveAfter[videoID] {
+			succeeded = append(succeeded, entry)
+		} else {
+			failed = append(failed, entry)
+		}
+	}
+	return
+}
+
+// inferContentTypeFromFiles determines content type by checking what files exist on disk
+// for a given video ID. Returns "video" if .info.json exists, "photo" if other .json
+// metadata exists (excluding .info.json and index.json), or "" if nothing found.
+func inferContentTypeFromFiles(dir string, videoID string) string {
+	if videoID == "" {
+		return ""
+	}
+
+	// Check for yt-dlp .info.json files (indicates video)
+	infoPattern := filepath.Join(dir, fmt.Sprintf("*%s*.info.json", videoID))
+	infoMatches, _ := filepath.Glob(infoPattern)
+	if len(infoMatches) > 0 {
+		return "video"
+	}
+
+	// Check for video files directly (mp4, webm, etc.)
+	for _, ext := range []string{"mp4", "mkv", "webm", "mov"} {
+		videoPattern := filepath.Join(dir, fmt.Sprintf("*%s*.%s", videoID, ext))
+		videoMatches, _ := filepath.Glob(videoPattern)
+		if len(videoMatches) > 0 {
+			return "video"
+		}
+	}
+
+	// Check for photo files (jpg, png, webp with this video ID but no .info.json)
+	for _, ext := range []string{"jpg", "jpeg", "png", "webp"} {
+		photoPattern := filepath.Join(dir, fmt.Sprintf("*%s*.%s", videoID, ext))
+		photoMatches, _ := filepath.Glob(photoPattern)
+		if len(photoMatches) > 0 {
+			return "photo"
+		}
+	}
+
+	// Check for gallery-dl metadata .json files (not .info.json, not index.json)
+	jsonPattern := filepath.Join(dir, fmt.Sprintf("*%s*.json", videoID))
+	jsonMatches, _ := filepath.Glob(jsonPattern)
+	for _, match := range jsonMatches {
+		base := filepath.Base(match)
+		if !strings.HasSuffix(base, ".info.json") && base != "index.json" {
+			return "photo"
+		}
+	}
+
+	return ""
+}
+
+// applyContentTypesFromCache applies cached content types and infers types from files on disk
+// for entries that don't have a cached type. Returns the number of entries that remain unknown.
+func applyContentTypesFromCache(entries []VideoEntry, cache map[string]string, dir string, organizeByCollection bool) int {
+	unknown := 0
+	for i := range entries {
+		// Already has a type assigned
+		if entries[i].ContentType != "" {
+			continue
+		}
+
+		// Try cache
+		if ct, ok := cache[entries[i].Link]; ok {
+			entries[i].ContentType = ct
+			continue
+		}
+
+		// Try inferring from files on disk
+		videoID := extractVideoID(entries[i].Link)
+		if videoID == "" {
+			unknown++
+			continue
+		}
+
+		lookupDir := dir
+		if organizeByCollection {
+			lookupDir = sanitizeCollectionName(entries[i].Collection)
+		}
+
+		ct := inferContentTypeFromFiles(lookupDir, videoID)
+		if ct != "" {
+			entries[i].ContentType = ct
+			// Update cache for future runs
+			cache[entries[i].Link] = ct
+		} else {
+			unknown++
+		}
+	}
+	return unknown
+}
+
 // parseInfoJSON reads a yt-dlp .info.json file and extracts metadata
 func parseInfoJSON(infoPath string) (*YtdlpInfo, error) {
 	data, err := os.ReadFile(infoPath)
@@ -558,12 +867,33 @@ func parseInfoJSON(infoPath string) (*YtdlpInfo, error) {
 	return &info, nil
 }
 
-// getOutputFilename returns the appropriate URL list filename for a collection
-func getOutputFilename(collection string) string {
+// getVideoOutputFilename returns the video URL list filename for a collection
+func getVideoOutputFilename(collection string) string {
 	if collection == "liked" {
 		return "liked_videos.txt"
 	}
 	return "fav_videos.txt"
+}
+
+// getPhotoOutputFilename returns the photo URL list filename for a collection
+func getPhotoOutputFilename(collection string) string {
+	if collection == "liked" {
+		return "liked_photos.txt"
+	}
+	return "fav_photos.txt"
+}
+
+// separateEntriesByContentType splits entries into videos and photos based on their ContentType field
+func separateEntriesByContentType(entries []VideoEntry) (videos []VideoEntry, photos []VideoEntry) {
+	for _, entry := range entries {
+		if entry.ContentType == "photo" {
+			photos = append(photos, entry)
+		} else {
+			// Default to video if ContentType is empty or "video"
+			videos = append(videos, entry)
+		}
+	}
+	return
 }
 
 // createCollectionDirectories creates directories for each collection
@@ -586,6 +916,7 @@ func createCollectionDirectories(videoEntries []VideoEntry, organizeByCollection
 }
 
 // writeFavoriteVideosToFile writes the video entries to output files, organized by collection if enabled.
+// Separates videos and photos into different files for processing by yt-dlp and gallery-dl respectively.
 func writeFavoriteVideosToFile(videoEntries []VideoEntry, outputName string, organizeByCollection bool) error {
 	if organizeByCollection {
 		// Create collection directories first
@@ -600,19 +931,52 @@ func writeFavoriteVideosToFile(videoEntries []VideoEntry, outputName string, org
 			collectionGroups[collection] = append(collectionGroups[collection], entry)
 		}
 
-		// Write separate files for each collection with collection-specific filenames
+		// Write separate files for each collection, splitting videos and photos
 		for collection, entries := range collectionGroups {
-			// Use collection-specific filename (fav_videos.txt for favorites, liked_videos.txt for liked)
-			collectionFilename := getOutputFilename(collection)
-			collectionOutputName := filepath.Join(collection, collectionFilename)
-			if err := writeVideoEntriesToFile(entries, collectionOutputName); err != nil {
-				return err
+			videos, photos := separateEntriesByContentType(entries)
+
+			// Write video URLs
+			if len(videos) > 0 {
+				videoFilename := getVideoOutputFilename(collection)
+				videoOutputName := filepath.Join(collection, videoFilename)
+				if err := writeVideoEntriesToFile(videos, videoOutputName); err != nil {
+					return err
+				}
+				fmt.Printf("[*] Extracted %d video URLs to '%s'\n", len(videos), videoOutputName)
 			}
-			fmt.Printf("[*] Extracted %d video URLs to '%s'\n", len(entries), collectionOutputName)
+
+			// Write photo URLs
+			if len(photos) > 0 {
+				photoFilename := getPhotoOutputFilename(collection)
+				photoOutputName := filepath.Join(collection, photoFilename)
+				if err := writeVideoEntriesToFile(photos, photoOutputName); err != nil {
+					return err
+				}
+				fmt.Printf("[*] Extracted %d photo URLs to '%s'\n", len(photos), photoOutputName)
+			}
+
 		}
 	} else {
-		// Write all entries to a single file (flat structure)
-		return writeVideoEntriesToFile(videoEntries, outputName)
+		// Flat structure - separate videos and photos
+		videos, photos := separateEntriesByContentType(videoEntries)
+
+		// Write video URLs (use the provided outputName for backward compatibility)
+		if len(videos) > 0 {
+			if err := writeVideoEntriesToFile(videos, outputName); err != nil {
+				return err
+			}
+			fmt.Printf("[*] Extracted %d video URLs to '%s'\n", len(videos), outputName)
+		}
+
+		// Write photo URLs to a separate file in the same directory as the video file
+		if len(photos) > 0 {
+			dir := filepath.Dir(outputName)
+			photoOutputName := filepath.Join(dir, "fav_photos.txt")
+			if err := writeVideoEntriesToFile(photos, photoOutputName); err != nil {
+				return err
+			}
+			fmt.Printf("[*] Extracted %d photo URLs to '%s'\n", len(photos), photoOutputName)
+		}
 	}
 	return nil
 }
@@ -709,6 +1073,7 @@ func processOutput(stdout, stderr io.Reader, stdoutWriter, stderrWriter io.Write
 	// Process stdout
 	go func() {
 		scanner := bufio.NewScanner(stdout)
+		scanner.Split(scanLinesAndCR)
 		for scanner.Scan() {
 			line := scanner.Text()
 
@@ -759,12 +1124,16 @@ func processOutput(stdout, stderr io.Reader, stdoutWriter, stderrWriter io.Write
 				renderer.renderProgress(state)
 			}
 		}
+		if err := scanner.Err(); err != nil {
+			_, _ = fmt.Fprintf(stderrWriter, "[!] stdout scanner error: %v\n", err)
+		}
 		done <- true
 	}()
 
 	// Process stderr
 	go func() {
 		scanner := bufio.NewScanner(stderr)
+		scanner.Split(scanLinesAndCR)
 		for scanner.Scan() {
 			line := scanner.Text()
 
@@ -785,6 +1154,9 @@ func processOutput(stdout, stderr io.Reader, stdoutWriter, stderrWriter io.Write
 			if renderer != nil && renderer.enabled {
 				renderer.renderProgress(state)
 			}
+		}
+		if err := scanner.Err(); err != nil {
+			_, _ = fmt.Fprintf(stderrWriter, "[!] stderr scanner error: %v\n", err)
 		}
 		done <- true
 	}()
@@ -824,10 +1196,8 @@ func parseYtdlpOutput(lines []string, entries []VideoEntry) []FailureDetail {
 	}
 
 	// Regex: ERROR: [TikTok] VIDEO_ID: error message
-	errorPattern := regexp.MustCompile(`ERROR:\s*\[TikTok\]\s*(\d+):\s*(.+)`)
-
 	for _, line := range lines {
-		matches := errorPattern.FindStringSubmatch(line)
+		matches := ytdlpErrorPattern.FindStringSubmatch(line)
 		if len(matches) >= 3 {
 			videoID := matches[1]
 			errorMsg := strings.TrimSpace(matches[2])
@@ -872,8 +1242,7 @@ func categorizeError(errorMsg string) ErrorType {
 // Returns: (currentIndex, total, isProgressLine, error)
 func parseProgressLine(line string) (int, int, bool, error) {
 	// Match pattern: [download] Downloading item X of Y
-	re := regexp.MustCompile(`\[download\] Downloading item (\d+) of (\d+)`)
-	matches := re.FindStringSubmatch(line)
+	matches := progressLinePattern.FindStringSubmatch(line)
 
 	if len(matches) != 3 {
 		return 0, 0, false, nil // Not a progress line
@@ -917,6 +1286,7 @@ func isVerboseLine(line string) bool {
 		"Video thumbnail is already present",
 		"Video metadata is already present",
 		"[download] 100%",
+		"% of ",
 	}
 
 	for _, pattern := range verbosePatterns {
@@ -932,6 +1302,41 @@ func isVerboseLine(line string) bool {
 // Returns: true if this is an error message
 func isErrorLine(line string) bool {
 	return strings.Contains(line, "ERROR: [TikTok]")
+}
+
+// scanLinesAndCR is a bufio.SplitFunc that splits on \n, \r\n, or bare \r.
+// yt-dlp uses bare \r for in-place percentage updates (e.g., "[download]  50.2% of ~10MiB").
+// The default bufio.ScanLines only splits on \n, so bare \r lines accumulate into a single
+// token that can exceed the 64KB scanner buffer, silently killing the scanner.
+func scanLinesAndCR(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	if atEOF && len(data) == 0 {
+		return 0, nil, nil
+	}
+	// Find the earliest \r or \n
+	for i := 0; i < len(data); i++ {
+		if data[i] == '\n' {
+			return i + 1, data[:i], nil
+		}
+		if data[i] == '\r' {
+			// Check for \r\n
+			if i+1 < len(data) {
+				if data[i+1] == '\n' {
+					return i + 2, data[:i], nil
+				}
+				return i + 1, data[:i], nil
+			}
+			// \r at end of buffer - if at EOF, return it; otherwise request more data
+			if atEOF {
+				return len(data), data[:i], nil
+			}
+			return 0, nil, nil // need more data to check for \r\n
+		}
+	}
+	// No delimiter found
+	if atEOF {
+		return len(data), data, nil
+	}
+	return 0, nil, nil // request more data
 }
 
 // supportsANSI checks if the terminal supports ANSI escape codes
@@ -968,6 +1373,37 @@ func supportsANSI() bool {
 	return false
 }
 
+// getWriter returns the output writer, defaulting to os.Stdout
+func (pr *ProgressRenderer) getWriter() io.Writer {
+	if pr.writer != nil {
+		return pr.writer
+	}
+	return os.Stdout
+}
+
+// buildProgressBar creates a progress bar string and percentage from current/total values
+func buildProgressBar(current, total, barWidth int) (string, float64) {
+	percentage := 0.0
+	if total > 0 {
+		percentage = float64(current) / float64(total) * 100
+	}
+	filledWidth := int(float64(barWidth) * percentage / 100)
+	if filledWidth > barWidth {
+		filledWidth = barWidth
+	}
+	bar := strings.Repeat("█", filledWidth) + strings.Repeat("░", barWidth-filledWidth)
+	return bar, percentage
+}
+
+// writeLine writes a carriage-return-prefixed line and pads to clear any previous longer line
+func (pr *ProgressRenderer) writeLine(line string) {
+	if len(line) < pr.lastLineLen {
+		line += strings.Repeat(" ", pr.lastLineLen-len(line))
+	}
+	pr.lastLineLen = len(line)
+	_, _ = fmt.Fprint(pr.getWriter(), line)
+}
+
 // renderProgress displays a live progress bar using ANSI escape codes
 // Format: "Downloading favorites (87/92) | ████████████░░░ 94.6% | Success: 85 | Failed: 2"
 func (pr *ProgressRenderer) renderProgress(state *ProgressState) {
@@ -975,59 +1411,23 @@ func (pr *ProgressRenderer) renderProgress(state *ProgressState) {
 		return
 	}
 
-	// Default to stdout if no writer specified
-	out := pr.writer
-	if out == nil {
-		out = os.Stdout
-	}
+	bar, percentage := buildProgressBar(state.CurrentIndex, state.TotalVideos, 20)
 
-	// Calculate percentage
-	percentage := 0.0
-	if state.TotalVideos > 0 {
-		percentage = float64(state.CurrentIndex) / float64(state.TotalVideos) * 100
-	}
-
-	// Create progress bar (20 characters wide)
-	barWidth := 20
-	filledWidth := int(float64(barWidth) * percentage / 100)
-	if filledWidth > barWidth {
-		filledWidth = barWidth
-	}
-
-	bar := strings.Repeat("█", filledWidth) + strings.Repeat("░", barWidth-filledWidth)
-
-	// Color codes
 	green := "\033[32m"
 	yellow := "\033[33m"
 	red := "\033[31m"
 	reset := "\033[0m"
 
-	// Build progress line
 	line := fmt.Sprintf("\rDownloading %s (%d/%d) | %s %.1f%% | %sSuccess: %d%s | %sSkipped: %d%s | %sFailed: %d%s",
 		state.CollectionName,
-		state.CurrentIndex,
-		state.TotalVideos,
-		bar,
-		percentage,
-		green,
-		state.SuccessCount,
-		reset,
-		yellow,
-		state.SkippedCount,
-		reset,
-		red,
-		state.FailureCount,
-		reset,
+		state.CurrentIndex, state.TotalVideos,
+		bar, percentage,
+		green, state.SuccessCount, reset,
+		yellow, state.SkippedCount, reset,
+		red, state.FailureCount, reset,
 	)
 
-	// Clear previous line if it was longer
-	if len(line) < pr.lastLineLen {
-		line += strings.Repeat(" ", pr.lastLineLen-len(line))
-	}
-	pr.lastLineLen = len(line)
-
-	// Print progress (using \r to overwrite current line)
-	_, _ = fmt.Fprint(out, line)
+	pr.writeLine(line)
 }
 
 // clearProgress clears the progress bar line
@@ -1035,25 +1435,25 @@ func (pr *ProgressRenderer) clearProgress() {
 	if !pr.enabled || pr.lastLineLen == 0 {
 		return
 	}
-
-	// Default to stdout if no writer specified
-	out := pr.writer
-	if out == nil {
-		out = os.Stdout
-	}
-
-	// Clear line and move to start
-	_, _ = fmt.Fprint(out, "\r"+strings.Repeat(" ", pr.lastLineLen)+"\r")
+	_, _ = fmt.Fprint(pr.getWriter(), "\r"+strings.Repeat(" ", pr.lastLineLen)+"\r")
 	pr.lastLineLen = 0
 }
 
 // calculateSessionTotals aggregates totals across all collections
-func calculateSessionTotals(collections []CollectionResult) (attempted, success, failed, skipped int) {
+// Returns: attempted, success, failed, skipped, photosAttempted, photosSuccess, photosFailed
+func calculateSessionTotals(collections []CollectionResult) (attempted, success, failed, skipped, photosAttempted, photosSuccess, photosFailed int) {
 	for _, col := range collections {
 		attempted += col.Attempted
 		success += col.Success
 		failed += col.Failed
 		skipped += col.Skipped
+
+		// Track photo-specific stats
+		if col.ContentType == "photo" {
+			photosAttempted += col.Attempted
+			photosSuccess += col.Success
+			photosFailed += col.Failed
+		}
 	}
 	return
 }
@@ -1066,15 +1466,34 @@ func printSessionSummary(session *DownloadSession) {
 	fmt.Println("                        DOWNLOAD SESSION SUMMARY")
 	fmt.Println(strings.Repeat("=", 80))
 	fmt.Printf("Duration: %s\n", formatDuration(int(duration.Seconds())))
-	fmt.Printf("Total Videos Attempted: %d\n", session.TotalAttempted)
-	fmt.Printf("  ✓ Successfully Downloaded: %d\n", session.TotalSuccess)
+
+	// Calculate video-only stats (total minus photos)
+	videoAttempted := session.TotalAttempted - session.TotalPhotosAttempted
+	videoSuccess := session.TotalSuccess - session.TotalPhotosSuccess
+	videoFailed := session.TotalFailed - session.TotalPhotosFailed
+
+	// Show video stats
+	fmt.Printf("Videos Attempted: %d\n", videoAttempted)
+	fmt.Printf("  ✓ Successfully Downloaded: %d\n", videoSuccess)
 	fmt.Printf("  - Skipped (Already Downloaded): %d\n", session.TotalSkipped)
-	fmt.Printf("  ✗ Failed: %d\n\n", session.TotalFailed)
+	fmt.Printf("  ✗ Failed: %d\n", videoFailed)
+
+	// Show photo stats if any photos were processed
+	if session.TotalPhotosAttempted > 0 {
+		fmt.Printf("\nPhotos Attempted: %d\n", session.TotalPhotosAttempted)
+		fmt.Printf("  ✓ Successfully Downloaded: %d\n", session.TotalPhotosSuccess)
+		fmt.Printf("  ✗ Failed: %d\n", session.TotalPhotosFailed)
+	}
+	fmt.Println()
 
 	if len(session.Collections) > 1 {
 		fmt.Println("Collection Breakdown:")
 		for _, col := range session.Collections {
-			fmt.Printf("  %s:\n", col.Name)
+			contentType := col.ContentType
+			if contentType == "" {
+				contentType = "mixed"
+			}
+			fmt.Printf("  %s (%s):\n", col.Name, contentType)
 			fmt.Printf("    Attempted: %-4d | Success: %-4d | Skipped: %-4d | Failed: %d\n",
 				col.Attempted, col.Success, col.Skipped, col.Failed)
 		}
@@ -1206,11 +1625,11 @@ func writeTroubleshootingTips(w *bufio.Writer, session *DownloadSession) {
 }
 
 // runYtdlp runs the yt-dlp command for the user
-func runYtdlp(psPrefix, outputName string, organizeByCollection, skipThumbnails, disableResume, disableProgressBar bool, cookieFile, cookieFromBrowser string, entries []VideoEntry) (*CollectionResult, error) {
+func runYtdlp(psPrefix, outputName string, config *Config, entries []VideoEntry) (*CollectionResult, error) {
 	// Create progress renderer if enabled
 	var renderer *ProgressRenderer
 	var state *ProgressState
-	if !disableProgressBar && supportsANSI() {
+	if !config.DisableProgressBar && supportsANSI() {
 		collectionName := filepath.Base(filepath.Dir(outputName))
 		if collectionName == "." {
 			collectionName = "videos"
@@ -1230,19 +1649,19 @@ func runYtdlp(psPrefix, outputName string, organizeByCollection, skipThumbnails,
 		ProgressState:    state,
 	}
 
-	return runYtdlpWithRunner(runner, psPrefix, outputName, organizeByCollection, skipThumbnails, disableResume, cookieFile, cookieFromBrowser, entries)
+	return runYtdlpWithRunner(runner, psPrefix, outputName, config, entries)
 }
 
 // runYtdlpWithRunner allows dependency injection for testing
-func runYtdlpWithRunner(runner CommandRunner, psPrefix, outputName string, organizeByCollection, skipThumbnails, disableResume bool, cookieFile, cookieFromBrowser string, entries []VideoEntry) (*CollectionResult, error) {
+func runYtdlpWithRunner(runner CommandRunner, psPrefix, outputName string, config *Config, entries []VideoEntry) (*CollectionResult, error) {
 	collectionName := filepath.Base(filepath.Dir(outputName))
 	if collectionName == "." {
 		collectionName = "videos"
 	}
 
-	// Calculate archive file path (matches logic below at lines 1159-1165)
+	// Calculate archive file path
 	var archivePath string
-	if organizeByCollection {
+	if config.OrganizeByCollection {
 		dir := filepath.Dir(outputName)
 		archivePath = filepath.Join(dir, "download_archive.txt")
 	} else {
@@ -1253,7 +1672,7 @@ func runYtdlpWithRunner(runner CommandRunner, psPrefix, outputName string, organ
 	videosToDownload := entries
 	skippedCount := 0
 
-	if !disableResume {
+	if !config.DisableResume {
 		archive, err := parseArchiveFile(archivePath)
 		if err == nil && len(archive) > 0 {
 			var filtered []VideoEntry
@@ -1305,7 +1724,7 @@ func runYtdlpWithRunner(runner CommandRunner, psPrefix, outputName string, organ
 	// Configure output format based on organization preference
 	// New format includes video ID and truncated title for better identification
 	var outputFormat string
-	if organizeByCollection {
+	if config.OrganizeByCollection {
 		// Include directory from outputName so videos download to collection folder
 		dir := filepath.Dir(outputName)
 		outputFormat = filepath.Join(dir, "%(upload_date)s_%(id)s_%(title).50B.%(ext)s")
@@ -1321,7 +1740,7 @@ func runYtdlpWithRunner(runner CommandRunner, psPrefix, outputName string, organ
 	if skippedCount > 0 {
 		tempFile := outputName + ".partial.txt"
 		// Ensure directory exists (should already exist from main, but just in case)
-		if organizeByCollection {
+		if config.OrganizeByCollection {
 			_ = os.MkdirAll(filepath.Dir(tempFile), 0755)
 		}
 
@@ -1344,24 +1763,26 @@ func runYtdlpWithRunner(runner CommandRunner, psPrefix, outputName string, organ
 		"-a", targetFile,
 		"--output", outputFormat,
 		"--write-info-json", // Save metadata JSON for each video
+		"--add-headers",
+		"User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7671.0 Safari/537.36", // set user-agent for chrome not yt-dlp's default
 	}
 
 	// Add thumbnail download unless skipped
-	if !skipThumbnails {
+	if !config.SkipThumbnails {
 		args = append(args, "--write-thumbnail")
 		args = append(args, "--convert-thumbnails", "jpg") // Ensure consistent .jpg extension
 	}
 
 	// Add cookie arguments if configured
-	if cookieFile != "" {
-		args = append(args, "--cookies", cookieFile)
+	if config.CookieFile != "" {
+		args = append(args, "--cookies", config.CookieFile)
 	}
-	if cookieFromBrowser != "" {
-		args = append(args, "--cookies-from-browser", cookieFromBrowser)
+	if config.CookieFromBrowser != "" {
+		args = append(args, "--cookies-from-browser", config.CookieFromBrowser)
 	}
 
 	// Add resume functionality flags unless disabled
-	if !disableResume {
+	if !config.DisableResume {
 		// Add flags for resume functionality
 		args = append(args, "--download-archive", archivePath)
 		args = append(args, "--no-overwrites")
@@ -1404,6 +1825,244 @@ func runYtdlpWithRunner(runner CommandRunner, psPrefix, outputName string, organ
 		} else {
 			fmt.Printf("[*] Successfully downloaded all %d videos.\n", result.Success)
 		}
+	}
+
+	return result, err
+}
+
+// GalleryDlInfo represents metadata from gallery-dl's .json files
+type GalleryDlInfo struct {
+	ID          string `json:"id"`
+	Description string `json:"description"`
+	Uploader    string `json:"author"`
+	UploaderID  string `json:"author_id"`
+	Date        string `json:"date"`
+	Category    string `json:"category"`
+	Subcategory string `json:"subcategory"`
+	Filename    string `json:"filename"`
+	Extension   string `json:"extension"`
+	ImageCount  int    `json:"count"`
+}
+
+// parseGalleryDlOutput parses gallery-dl output to detect success/failure
+// gallery-dl outputs: "#<number> <url>" for successful downloads
+// And "ERROR:" or "[error]" for failures
+func parseGalleryDlOutput(lines []string, entries []VideoEntry) (success int, failures []FailureDetail) {
+	// Build video ID to URL map
+	idToURL := make(map[string]string)
+	for _, entry := range entries {
+		id := extractVideoID(entry.Link)
+		if id != "" {
+			idToURL[id] = entry.Link
+		}
+	}
+
+	// Track which video IDs we've seen in success messages
+	seenIDs := make(map[string]bool)
+
+	for _, line := range lines {
+		// Check for error lines
+		if galleryErrorPattern.MatchString(line) {
+			// Extract video ID from error line
+			if matches := galleryVideoIDPattern.FindStringSubmatch(line); len(matches) > 1 {
+				videoID := matches[1]
+				if !seenIDs[videoID] {
+					seenIDs[videoID] = true
+					failures = append(failures, FailureDetail{
+						VideoID:      videoID,
+						VideoURL:     idToURL[videoID],
+						ErrorMessage: line,
+						ErrorType:    categorizeError(line),
+					})
+				}
+			}
+			continue
+		}
+
+		// Check for success lines (starts with #number)
+		if gallerySuccessPattern.MatchString(line) {
+			// Try to extract video ID from the line
+			if matches := galleryVideoIDPattern.FindStringSubmatch(line); len(matches) > 1 {
+				seenIDs[matches[1]] = true
+			}
+			success++
+		}
+	}
+
+	return success, failures
+}
+
+// getPhotoArchivePath returns the path to the photo archive file for a given output directory.
+func getPhotoArchivePath(outputDir string, organizeByCollection bool) string {
+	if organizeByCollection {
+		return filepath.Join(outputDir, "photo_archive.txt")
+	}
+	return "photo_archive.txt"
+}
+
+// appendToPhotoArchive appends successfully downloaded photo IDs to the photo archive file.
+func appendToPhotoArchive(archivePath string, entries []VideoEntry) error {
+	f, err := os.OpenFile(archivePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open photo archive for writing: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+
+	for _, entry := range entries {
+		videoID := extractVideoID(entry.Link)
+		if videoID != "" {
+			if _, err := fmt.Fprintf(f, "tiktok %s\n", videoID); err != nil {
+				return fmt.Errorf("failed to write to photo archive: %v", err)
+			}
+		}
+	}
+	return nil
+}
+
+// runGalleryDl runs gallery-dl to download photo/slideshow posts
+func runGalleryDl(psPrefix, outputDir string, config *Config, entries []VideoEntry) (*CollectionResult, error) {
+	if len(entries) == 0 {
+		return &CollectionResult{
+			Name:           filepath.Base(outputDir),
+			Attempted:      0,
+			Success:        0,
+			Failed:         0,
+			Skipped:        0,
+			FailureDetails: []FailureDetail{},
+		}, nil
+	}
+
+	collectionName := filepath.Base(outputDir)
+	if collectionName == "." {
+		collectionName = "photos"
+	}
+
+	// Photo archive skip optimization (same concept as yt-dlp's download archive)
+	archivePath := getPhotoArchivePath(outputDir, config.OrganizeByCollection)
+	photosToDownload := entries
+	skippedCount := 0
+
+	if !config.DisableResume {
+		archive, err := parseArchiveFile(archivePath)
+		if err == nil && len(archive) > 0 {
+			var filtered []VideoEntry
+			for _, entry := range entries {
+				videoID := extractVideoID(entry.Link)
+				if videoID != "" && archive[videoID] {
+					skippedCount++
+				} else {
+					filtered = append(filtered, entry)
+				}
+			}
+			photosToDownload = filtered
+		}
+	}
+
+	// If all photos are skipped, return early
+	if len(photosToDownload) == 0 {
+		fmt.Printf("[*] %s collection: All %d photos already downloaded (skipping gallery-dl)\n",
+			collectionName, len(entries))
+		return &CollectionResult{
+			Name:           collectionName,
+			Attempted:      len(entries),
+			Success:        len(entries),
+			Failed:         0,
+			Skipped:        len(entries),
+			FailureDetails: []FailureDetail{},
+		}, nil
+	}
+
+	if skippedCount > 0 {
+		fmt.Printf("[*] %s collection: %d photos to download (%d skipped)\n",
+			collectionName, len(photosToDownload), skippedCount)
+	}
+
+	fmt.Printf("[*] Running gallery-dl for %d photo posts in %s...\n", len(photosToDownload), collectionName)
+	cmdStr := fmt.Sprintf("%sgallery-dl.exe", psPrefix)
+
+	// Write URLs to temp file
+	tempFile := filepath.Join(outputDir, "photo_urls_temp.txt")
+	if err := writeVideoEntriesToFile(photosToDownload, tempFile); err != nil {
+		return nil, fmt.Errorf("failed to create temp URL file: %v", err)
+	}
+	defer func() { _ = os.Remove(tempFile) }()
+
+	// Build gallery-dl arguments
+	// gallery-dl uses different filename formatting than yt-dlp
+	// Format: {date:%Y%m%d}_{id}_{title:.50}.{extension}
+	filenameFormat := "{date:%Y%m%d}_{id}_{description:.50}.{extension}"
+
+	args := []string{
+		"--input-file", tempFile,
+		"--directory", outputDir,
+		"--filename", filenameFormat,
+		"--write-metadata", // Save metadata JSON for each photo
+	}
+
+	// Add cookie support
+	if config.CookieFile != "" {
+		args = append(args, "--cookies", config.CookieFile)
+	}
+	if config.CookieFromBrowser != "" {
+		args = append(args, "--cookies-from-browser", config.CookieFromBrowser)
+	}
+
+	// Execute command
+	cmd := exec.Command(cmdStr, args...)
+	var stdoutBuf, stderrBuf bytes.Buffer
+	cmd.Stdout = io.MultiWriter(os.Stdout, &stdoutBuf)
+	cmd.Stderr = io.MultiWriter(os.Stderr, &stderrBuf)
+
+	err := cmd.Run()
+
+	// Parse output
+	combined := combineOutputLines(stdoutBuf.String(), stderrBuf.String())
+	_, failures := parseGalleryDlOutput(combined, photosToDownload)
+
+	// Append succeeded entries to photo archive (for future skip optimization)
+	if !config.DisableResume && len(photosToDownload) > len(failures) {
+		// Identify succeeded entries by checking which video IDs now have files on disk
+		var succeededEntries []VideoEntry
+		for _, entry := range photosToDownload {
+			videoID := extractVideoID(entry.Link)
+			if videoID == "" {
+				continue
+			}
+			// Check if files were downloaded for this ID
+			ct := inferContentTypeFromFiles(outputDir, videoID)
+			if ct == "photo" {
+				succeededEntries = append(succeededEntries, entry)
+			}
+		}
+		if len(succeededEntries) > 0 {
+			if archiveErr := appendToPhotoArchive(archivePath, succeededEntries); archiveErr != nil {
+				fmt.Printf("[!] Warning: Failed to update photo archive: %v\n", archiveErr)
+			}
+		}
+	}
+
+	result := &CollectionResult{
+		Name:           collectionName,
+		Attempted:      len(entries),
+		Failed:         len(failures),
+		Success:        len(entries) - len(failures),
+		Skipped:        skippedCount,
+		FailureDetails: failures,
+	}
+
+	// Safety check
+	if result.Success < 0 {
+		result.Success = 0
+	}
+	if result.Skipped < 0 {
+		result.Skipped = 0
+	}
+
+	if err != nil || len(failures) > 0 {
+		fmt.Printf("[!] Photo download completed with %d failures out of %d photos.\n",
+			result.Failed, len(photosToDownload))
+	} else {
+		fmt.Printf("[*] Successfully downloaded all %d photos.\n", result.Success-result.Skipped)
 	}
 
 	return result, err
@@ -1468,18 +2127,37 @@ func writeHTMLIndex(dir string, index *CollectionIndex) error {
 }
 
 // generateCollectionIndex creates JSON and HTML indexes for a collection after download.
-// It enriches entries with metadata from yt-dlp's .info.json files and generates
-// both index.json (machine-readable) and index.html (visual browser) files.
+// scanPhotoFiles finds downloaded image files and an audio file for a photo post
+// by globbing the collection directory for files matching the video ID.
+func scanPhotoFiles(collectionDir, videoID string) (imageFiles []string, audioFile string) {
+	pattern := filepath.Join(collectionDir, fmt.Sprintf("*%s*", videoID))
+	matches, _ := filepath.Glob(pattern)
+	for _, match := range matches {
+		ext := strings.ToLower(filepath.Ext(match))
+		switch ext {
+		case ".jpg", ".jpeg", ".png", ".webp":
+			imageFiles = append(imageFiles, filepath.Base(match))
+		case ".m4a", ".mp3":
+			audioFile = filepath.Base(match)
+		}
+	}
+	return
+}
+
+// It enriches entries with metadata from yt-dlp's .info.json files and gallery-dl's .json files,
+// then generates both index.json (machine-readable) and index.html (visual browser) files.
 func generateCollectionIndex(collectionDir string, entries []VideoEntry, failures []FailureDetail) error {
 	collectionName := filepath.Base(collectionDir)
-	fmt.Printf("[*] Generating index for %s (%d videos)...\n", collectionName, len(entries))
-	// 1. Scan for .info.json files in the directory
+	videos, photos := separateEntriesByContentType(entries)
+	fmt.Printf("[*] Generating index for %s (%d videos, %d photos)...\n", collectionName, len(videos), len(photos))
+
+	// 1. Scan for yt-dlp .info.json files in the directory
 	infoFiles, err := filepath.Glob(filepath.Join(collectionDir, "*.info.json"))
 	if err != nil {
 		return fmt.Errorf("collection %q: error scanning for info files: %v", collectionName, err)
 	}
 
-	// 2. Build video ID to info map
+	// 2. Build video ID to info map from yt-dlp metadata
 	infoMap := make(map[string]*YtdlpInfo)
 	for _, f := range infoFiles {
 		info, err := parseInfoJSON(f)
@@ -1489,7 +2167,32 @@ func generateCollectionIndex(collectionDir string, entries []VideoEntry, failure
 		}
 		infoMap[info.ID] = info
 	}
-	fmt.Printf("[*] Found %d metadata files for %s\n", len(infoMap), collectionName)
+
+	// 3. Scan for gallery-dl .json metadata files (for photos)
+	// gallery-dl creates files like: <filename>.json alongside downloaded images
+	galleryDlFiles, _ := filepath.Glob(filepath.Join(collectionDir, "*.json"))
+	photoInfoMap := make(map[string]*GalleryDlInfo)
+	for _, f := range galleryDlFiles {
+		// Skip yt-dlp info files
+		if strings.HasSuffix(f, ".info.json") || f == filepath.Join(collectionDir, "index.json") {
+			continue
+		}
+		data, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		var info GalleryDlInfo
+		if err := json.Unmarshal(data, &info); err != nil {
+			continue
+		}
+		// gallery-dl uses string IDs
+		if info.ID != "" {
+			photoInfoMap[info.ID] = &info
+		}
+	}
+
+	totalMetadataFiles := len(infoMap) + len(photoInfoMap)
+	fmt.Printf("[*] Found %d metadata files for %s\n", totalMetadataFiles, collectionName)
 
 	// 3. Build failure map for quick lookup
 	failureMap := make(map[string]string)
@@ -1514,6 +2217,53 @@ func generateCollectionIndex(collectionDir string, entries []VideoEntry, failure
 			continue
 		}
 
+		// Handle photos differently from videos
+		if enrichedEntries[i].ContentType == "photo" {
+			// Look for gallery-dl metadata
+			if info, ok := photoInfoMap[videoID]; ok {
+				enrichedEntries[i].Description = info.Description
+				enrichedEntries[i].Creator = info.Uploader
+				enrichedEntries[i].CreatorID = info.UploaderID
+				enrichedEntries[i].ImageCount = info.ImageCount
+
+				// Find downloaded image and audio files for this photo post
+				imageFiles, audioFile := scanPhotoFiles(collectionDir, videoID)
+				enrichedEntries[i].AudioFile = audioFile
+				enrichedEntries[i].ImageFiles = imageFiles
+				if len(imageFiles) > 0 {
+					enrichedEntries[i].LocalFilename = imageFiles[0]
+					enrichedEntries[i].ThumbnailFile = imageFiles[0]
+					enrichedEntries[i].Downloaded = true
+				} else {
+					enrichedEntries[i].Downloaded = false
+					if errMsg, ok := failureMap[videoID]; ok {
+						enrichedEntries[i].DownloadError = errMsg
+					} else {
+						enrichedEntries[i].DownloadError = "Photo files not found"
+					}
+				}
+			} else {
+				// No gallery-dl metadata, but try to find image files by video ID
+				imageFiles, audioFile := scanPhotoFiles(collectionDir, videoID)
+				enrichedEntries[i].AudioFile = audioFile
+				if len(imageFiles) > 0 {
+					enrichedEntries[i].ImageFiles = imageFiles
+					enrichedEntries[i].LocalFilename = imageFiles[0]
+					enrichedEntries[i].ThumbnailFile = imageFiles[0]
+					enrichedEntries[i].Downloaded = true
+				} else {
+					enrichedEntries[i].Downloaded = false
+					if errMsg, ok := failureMap[videoID]; ok {
+						enrichedEntries[i].DownloadError = errMsg
+					} else {
+						enrichedEntries[i].DownloadError = "Photo not downloaded or metadata unavailable"
+					}
+				}
+			}
+			continue
+		}
+
+		// Handle videos (existing logic)
 		if info, ok := infoMap[videoID]; ok {
 			enrichedEntries[i].Title = info.Title
 			enrichedEntries[i].Creator = info.Uploader
@@ -1907,6 +2657,13 @@ func main() {
 
 		fmt.Printf("[*] Loaded %d video entries from '%s'\n", len(videoEntries), config.JSONFile)
 
+		// Apply content types from cache and file inference for proper index generation
+		indexCache := loadContentTypeCache("content_types_cache.json")
+		unknownCount := applyContentTypesFromCache(videoEntries, indexCache, ".", config.OrganizeByCollection)
+		if unknownCount > 0 {
+			fmt.Printf("[*] %d entries have unknown content type (no cache or files found)\n", unknownCount)
+		}
+
 		if config.OrganizeByCollection {
 			// Regenerate indexes for each collection
 			collections := make(map[string]bool)
@@ -1935,6 +2692,11 @@ func main() {
 				fmt.Println("[*] Generated index.html and index.json")
 			}
 		}
+
+		// Save any updated cache entries from file inference
+		if err := saveContentTypeCache("content_types_cache.json", indexCache); err != nil {
+			fmt.Printf("[!] Warning: could not save content type cache: %v\n", err)
+		}
 		return
 	}
 
@@ -1946,9 +2708,31 @@ func main() {
 	}
 
 	// Attempt to get or download yt-dlp.exe (handles updates for existing files)
-	if err := getOrDownloadYtdlp(http.DefaultClient, "yt-dlp.exe"); err != nil {
+	if err := getOrDownloadTool(http.DefaultClient, &ToolConfig{
+		Name:            "yt-dlp",
+		ExeName:         "yt-dlp.exe",
+		GitHubRepo:      "yt-dlp/yt-dlp",
+		GetVersion:      getYtdlpVersion,
+		CompareVersions: compareVersions,
+		SelfUpdate:      updateYtdlp,
+	}); err != nil {
 		fmt.Printf("[!] Warning: %v\n", err)
 		// Not exiting here so you can still generate fav_videos.txt if needed
+	}
+
+	// Also get gallery-dl for photo support
+	galleryDlAvailable := false
+	if err := getOrDownloadTool(http.DefaultClient, &ToolConfig{
+		Name:            "gallery-dl",
+		ExeName:         "gallery-dl.exe",
+		GitHubRepo:      "mikf/gallery-dl",
+		GetVersion:      getGalleryDlVersion,
+		CompareVersions: compareGalleryDlVersions,
+		StripVPrefix:    true,
+	}); err != nil {
+		fmt.Printf("[!] Warning: gallery-dl not available, photo posts will be skipped: %v\n", err)
+	} else {
+		galleryDlAvailable = true
 	}
 
 	fmt.Print("[*] Would you like to include 'Liked' videos as well? (y/n, default is 'n'): ")
@@ -1979,14 +2763,36 @@ func main() {
 
 	fmt.Printf("[*] Successfully loaded %d video entries from '%s'\n", len(videoEntries), config.JSONFile)
 
-	// Write video entries to files
+	// Apply known content types from cache and file inference (no network requests)
+	cacheFilePath := "content_types_cache.json"
+	cache := loadContentTypeCache(cacheFilePath)
+	unknownCount := applyContentTypesFromCache(videoEntries, cache, ".", config.OrganizeByCollection)
+
+	// Count known videos and photos
+	knownVideos, knownPhotos := separateEntriesByContentType(videoEntries)
+	cachedVideoCount := 0
+	cachedPhotoCount := 0
+	for _, e := range knownVideos {
+		if e.ContentType == "video" {
+			cachedVideoCount++
+		}
+	}
+	cachedPhotoCount = len(knownPhotos)
+
+	if cachedVideoCount+cachedPhotoCount > 0 {
+		fmt.Printf("[*] Content types: %d videos, %d photos from cache/files", cachedVideoCount, cachedPhotoCount)
+		if unknownCount > 0 {
+			fmt.Printf(", %d unknown (will try yt-dlp first)", unknownCount)
+		}
+		fmt.Println()
+	} else if unknownCount > 0 {
+		fmt.Printf("[*] No cached content types found. All %d URLs will be sent to yt-dlp first.\n", unknownCount)
+	}
+
+	// Write ALL video entries to files (unknowns go in the video file for yt-dlp)
 	if err := writeFavoriteVideosToFile(videoEntries, config.OutputName, config.OrganizeByCollection); err != nil {
 		fmt.Println(err)
 		os.Exit(1)
-	}
-
-	if !config.OrganizeByCollection {
-		fmt.Printf("[*] Extracted %d video URLs to '%s'.\n", len(videoEntries), config.OutputName)
 	}
 
 	// Construct the recommended yt-dlp command
@@ -2029,55 +2835,216 @@ func main() {
 		}
 
 		if config.OrganizeByCollection {
-			// Run yt-dlp for each collection
+			// Run yt-dlp first, then gallery-dl fallback for each collection
 			collections := make(map[string]bool)
 			for _, entry := range videoEntries {
 				collections[sanitizeCollectionName(entry.Collection)] = true
 			}
 			for collection := range collections {
-				// Use collection-specific filename
-				collectionFilename := getOutputFilename(collection)
-				collectionOutputName := filepath.Join(collection, collectionFilename)
 				collectionEntries := getEntriesForCollection(videoEntries, collection)
 
-				fmt.Printf("[*] Processing collection: %s\n", collection)
-				result, _ := runYtdlp(psPrefix, collectionOutputName, config.OrganizeByCollection, config.SkipThumbnails, config.DisableResume, config.DisableProgressBar, config.CookieFile, config.CookieFromBrowser, collectionEntries)
-
-				// Track session results
-				if result != nil {
-					session.Collections = append(session.Collections, *result)
+				// Separate known-video, known-photo, and unknown entries
+				var knownVideoEntries, knownPhotoEntries, unknownEntries []VideoEntry
+				for _, entry := range collectionEntries {
+					switch entry.ContentType {
+					case "video":
+						knownVideoEntries = append(knownVideoEntries, entry)
+					case "photo":
+						knownPhotoEntries = append(knownPhotoEntries, entry)
+					default:
+						unknownEntries = append(unknownEntries, entry)
+					}
 				}
 
-				// Generate index after download completes (pass failures for error details)
-				var failures []FailureDetail
-				if result != nil {
-					failures = result.FailureDetails
+				var allFailures []FailureDetail
+
+				// Phase 1: yt-dlp pass (known videos + unknown entries)
+				ytdlpEntries := append(knownVideoEntries, unknownEntries...)
+				if len(ytdlpEntries) > 0 {
+					collectionFilename := getVideoOutputFilename(collection)
+					collectionOutputName := filepath.Join(collection, collectionFilename)
+
+					// Write the combined list for yt-dlp
+					if err := writeVideoEntriesToFile(ytdlpEntries, collectionOutputName); err != nil {
+						fmt.Printf("[!] Error writing URL file: %v\n", err)
+						continue
+					}
+
+					// Snapshot archive before yt-dlp
+					archivePath := filepath.Join(collection, "download_archive.txt")
+					archiveBefore, _ := parseArchiveFile(archivePath)
+
+					fmt.Printf("[*] Processing collection: %s (%d videos + %d unknown)\n",
+						collection, len(knownVideoEntries), len(unknownEntries))
+					result, _ := runYtdlp(psPrefix, collectionOutputName, config, ytdlpEntries)
+
+					// Track session results
+					if result != nil {
+						result.ContentType = "video"
+						session.Collections = append(session.Collections, *result)
+						allFailures = append(allFailures, result.FailureDetails...)
+					}
+
+					// Phase 1b: Diff archive to identify failed unknowns
+					if len(unknownEntries) > 0 {
+						archiveAfter, _ := parseArchiveFile(archivePath)
+						succeeded, _, failed := identifyFailedEntries(unknownEntries, archiveBefore, archiveAfter)
+
+						// Update cache: succeeded unknowns are videos
+						for _, entry := range succeeded {
+							cache[entry.Link] = "video"
+						}
+
+						// Failed unknowns become candidates for gallery-dl
+						if len(failed) > 0 && galleryDlAvailable {
+							knownPhotoEntries = append(knownPhotoEntries, failed...)
+						} else {
+							// No gallery-dl: update cache for failed unknowns that have files on disk
+							for _, entry := range failed {
+								videoID := extractVideoID(entry.Link)
+								if ct := inferContentTypeFromFiles(collection, videoID); ct != "" {
+									cache[entry.Link] = ct
+								}
+							}
+						}
+					}
 				}
-				if err := generateCollectionIndex(collection, collectionEntries, failures); err != nil {
+
+				// Phase 2: gallery-dl pass (known photos + failed unknowns from yt-dlp)
+				if len(knownPhotoEntries) > 0 && galleryDlAvailable {
+					fmt.Printf("[*] Processing collection: %s (%d photos)\n", collection, len(knownPhotoEntries))
+					result, _ := runGalleryDl(psPrefix, collection, config, knownPhotoEntries)
+
+					// Track session results
+					if result != nil {
+						result.ContentType = "photo"
+						session.Collections = append(session.Collections, *result)
+						allFailures = append(allFailures, result.FailureDetails...)
+					}
+
+					// Update cache: entries that gallery-dl succeeded on are photos
+					for _, entry := range knownPhotoEntries {
+						videoID := extractVideoID(entry.Link)
+						if ct := inferContentTypeFromFiles(collection, videoID); ct == "photo" {
+							cache[entry.Link] = "photo"
+						}
+					}
+				}
+
+				// Phase 3: Save cache, generate index
+				if err := saveContentTypeCache(cacheFilePath, cache); err != nil {
+					fmt.Printf("[!] Warning: could not save content type cache: %v\n", err)
+				}
+
+				// Re-apply content types to entries for index generation
+				for i := range collectionEntries {
+					if ct, ok := cache[collectionEntries[i].Link]; ok {
+						collectionEntries[i].ContentType = ct
+					}
+				}
+
+				if err := generateCollectionIndex(collection, collectionEntries, allFailures); err != nil {
 					fmt.Printf("[!] Warning: Failed to generate index for %s: %v\n", collection, err)
 				} else {
 					fmt.Printf("[*] Generated index.html and index.json for %s\n", collection)
 				}
 			}
 		} else {
-			// Flat structure
-			result, _ := runYtdlp(psPrefix, config.OutputName, config.OrganizeByCollection, config.SkipThumbnails, config.DisableResume, config.DisableProgressBar, config.CookieFile, config.CookieFromBrowser, videoEntries)
-
-			// Track session results
-			if result != nil {
-				session.Collections = append(session.Collections, *result)
+			// Flat structure - same try-then-fallback approach
+			var knownVideoEntries, knownPhotoEntries, unknownEntries []VideoEntry
+			for _, entry := range videoEntries {
+				switch entry.ContentType {
+				case "video":
+					knownVideoEntries = append(knownVideoEntries, entry)
+				case "photo":
+					knownPhotoEntries = append(knownPhotoEntries, entry)
+				default:
+					unknownEntries = append(unknownEntries, entry)
+				}
 			}
 
-			// Generate index for flat structure in current directory
+			var allFailures []FailureDetail
+
+			// Phase 1: yt-dlp pass (known videos + unknown entries)
+			ytdlpEntries := append(knownVideoEntries, unknownEntries...)
+			if len(ytdlpEntries) > 0 {
+				// Write the combined list for yt-dlp
+				if err := writeVideoEntriesToFile(ytdlpEntries, config.OutputName); err != nil {
+					fmt.Printf("[!] Error writing URL file: %v\n", err)
+				} else {
+					// Snapshot archive before yt-dlp
+					archiveBefore, _ := parseArchiveFile("download_archive.txt")
+
+					result, _ := runYtdlp(psPrefix, config.OutputName, config, ytdlpEntries)
+
+					if result != nil {
+						result.ContentType = "video"
+						session.Collections = append(session.Collections, *result)
+						allFailures = append(allFailures, result.FailureDetails...)
+					}
+
+					// Phase 1b: Diff archive to identify failed unknowns
+					if len(unknownEntries) > 0 {
+						archiveAfter, _ := parseArchiveFile("download_archive.txt")
+						succeeded, _, failed := identifyFailedEntries(unknownEntries, archiveBefore, archiveAfter)
+
+						for _, entry := range succeeded {
+							cache[entry.Link] = "video"
+						}
+
+						if len(failed) > 0 && galleryDlAvailable {
+							knownPhotoEntries = append(knownPhotoEntries, failed...)
+						} else {
+							dir, _ := filepath.Abs(".")
+							for _, entry := range failed {
+								videoID := extractVideoID(entry.Link)
+								if ct := inferContentTypeFromFiles(dir, videoID); ct != "" {
+									cache[entry.Link] = ct
+								}
+							}
+						}
+					}
+				}
+			}
+
+			// Phase 2: gallery-dl pass
+			if len(knownPhotoEntries) > 0 && galleryDlAvailable {
+				fmt.Printf("[*] Processing %d photos with gallery-dl...\n", len(knownPhotoEntries))
+				dir, _ := filepath.Abs(".")
+				result, _ := runGalleryDl(psPrefix, dir, config, knownPhotoEntries)
+
+				if result != nil {
+					result.ContentType = "photo"
+					session.Collections = append(session.Collections, *result)
+					allFailures = append(allFailures, result.FailureDetails...)
+				}
+
+				for _, entry := range knownPhotoEntries {
+					videoID := extractVideoID(entry.Link)
+					absDir, _ := filepath.Abs(".")
+					if ct := inferContentTypeFromFiles(absDir, videoID); ct == "photo" {
+						cache[entry.Link] = "photo"
+					}
+				}
+			}
+
+			// Phase 3: Save cache, generate index
+			if err := saveContentTypeCache(cacheFilePath, cache); err != nil {
+				fmt.Printf("[!] Warning: could not save content type cache: %v\n", err)
+			}
+
+			// Re-apply content types to entries for index generation
+			for i := range videoEntries {
+				if ct, ok := cache[videoEntries[i].Link]; ok {
+					videoEntries[i].ContentType = ct
+				}
+			}
+
 			dir, err := filepath.Abs(".")
 			if err != nil {
 				dir = "."
 			}
-			var failures []FailureDetail
-			if result != nil {
-				failures = result.FailureDetails
-			}
-			if err := generateCollectionIndex(dir, videoEntries, failures); err != nil {
+			if err := generateCollectionIndex(dir, videoEntries, allFailures); err != nil {
 				fmt.Printf("[!] Warning: Failed to generate index: %v\n", err)
 			} else {
 				fmt.Println("[*] Generated index.html and index.json")
@@ -2086,7 +3053,8 @@ func main() {
 
 		// Finalize session
 		session.EndTime = time.Now()
-		session.TotalAttempted, session.TotalSuccess, session.TotalFailed, session.TotalSkipped =
+		session.TotalAttempted, session.TotalSuccess, session.TotalFailed, session.TotalSkipped,
+			session.TotalPhotosAttempted, session.TotalPhotosSuccess, session.TotalPhotosFailed =
 			calculateSessionTotals(session.Collections)
 
 		// Print summary

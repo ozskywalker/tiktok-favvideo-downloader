@@ -9,7 +9,17 @@
       "Bash(go build:*)",
       "Bash(./tiktok-favvideo-downloader.exe --help)",
       "Bash(gh issue view:*)",
-      "Bash(golangci-lint run:*)"
+      "Bash(golangci-lint run:*)",
+      "Bash(git checkout:*)",
+      "Bash(git pull:*)",
+      "WebFetch(domain:github.com)",
+      "Bash(yt-dlp:*)",
+      "Bash(echo:*)",
+      "WebFetch(domain:www.tiktok.com)",
+      "Bash(go tool cover:*)",
+      "Bash(ls:*)",
+      "Bash(./tiktok-favvideo-downloader.exe)",
+      "Bash(git show:*)"
     ],
     "deny": [],
     "ask": []

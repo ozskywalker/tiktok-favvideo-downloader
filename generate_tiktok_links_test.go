@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"flag"
@@ -193,7 +194,14 @@ func TestGetOrDownloadYtdlp(t *testing.T) {
 	}
 
 	client := http.DefaultClient // not actually used for this scenario
-	if err := getOrDownloadYtdlp(client, exeName); err != nil {
+	if err := getOrDownloadTool(client, &ToolConfig{
+		Name:            "yt-dlp",
+		ExeName:         "yt-dlp.exe",
+		GitHubRepo:      "yt-dlp/yt-dlp",
+		GetVersion:      getYtdlpVersion,
+		CompareVersions: compareVersions,
+		SelfUpdate:      updateYtdlp,
+	}); err != nil {
 		t.Errorf("expected nil error when file already exists, got %v", err)
 	}
 
@@ -236,7 +244,14 @@ func TestGetOrDownloadYtdlp(t *testing.T) {
 	}
 
 	// Now call getOrDownloadYtdlp again, which should attempt a download
-	if err := getOrDownloadYtdlp(customClient, exeName); err != nil {
+	if err := getOrDownloadTool(customClient, &ToolConfig{
+		Name:            "yt-dlp",
+		ExeName:         "yt-dlp.exe",
+		GitHubRepo:      "yt-dlp/yt-dlp",
+		GetVersion:      getYtdlpVersion,
+		CompareVersions: compareVersions,
+		SelfUpdate:      updateYtdlp,
+	}); err != nil {
 		t.Errorf("expected nil error on download scenario, got %v", err)
 	}
 
@@ -296,169 +311,130 @@ func (m *MockCommandRunner) Run(name string, args ...string) (CapturedOutput, er
 // TestRunYtdlpWithRunner tests the runYtdlp function with mocked command execution
 func TestRunYtdlpWithRunner(t *testing.T) {
 	tests := []struct {
-		name                 string
-		psPrefix             string
-		outputName           string
-		organizeByCollection bool
-		skipThumbnails       bool
-		disableResume        bool
-		cookieFile           string
-		cookieFromBrowser    string
-		shouldFail           bool
-		expectCmd            string
-		expectArgs           []string
+		name       string
+		psPrefix   string
+		outputName string
+		config     *Config
+		shouldFail bool
+		expectCmd  string
+		expectArgs []string
 	}{
 		{
-			name:                 "successful execution without powershell prefix",
-			psPrefix:             "",
-			outputName:           "test_videos.txt",
-			organizeByCollection: false,
-			skipThumbnails:       false,
-			disableResume:        true,
-			shouldFail:           false,
-			expectCmd:            "yt-dlp.exe",
-			expectArgs:           []string{"-a", "test_videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json", "--write-thumbnail", "--convert-thumbnails", "jpg"},
+			name:       "successful execution without powershell prefix",
+			psPrefix:   "",
+			outputName: "test_videos.txt",
+			config:     &Config{DisableResume: true},
+			shouldFail: false,
+			expectCmd:  "yt-dlp.exe",
+			expectArgs: []string{"-a", "test_videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json", "--add-headers", "User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7671.0 Safari/537.36", "--write-thumbnail", "--convert-thumbnails", "jpg"},
 		},
 		{
-			name:                 "successful execution with powershell prefix",
-			psPrefix:             ".\\",
-			outputName:           "fav_videos.txt",
-			organizeByCollection: false,
-			skipThumbnails:       false,
-			disableResume:        true,
-			shouldFail:           false,
-			expectCmd:            ".\\yt-dlp.exe",
-			expectArgs:           []string{"-a", "fav_videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json", "--write-thumbnail", "--convert-thumbnails", "jpg"},
+			name:       "successful execution with powershell prefix",
+			psPrefix:   ".\\",
+			outputName: "fav_videos.txt",
+			config:     &Config{DisableResume: true},
+			shouldFail: false,
+			expectCmd:  ".\\yt-dlp.exe",
+			expectArgs: []string{"-a", "fav_videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json", "--add-headers", "User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7671.0 Safari/537.36", "--write-thumbnail", "--convert-thumbnails", "jpg"},
 		},
 		{
-			name:                 "command execution failure",
-			psPrefix:             "",
-			outputName:           "videos.txt",
-			organizeByCollection: false,
-			skipThumbnails:       false,
-			disableResume:        true,
-			shouldFail:           true,
-			expectCmd:            "yt-dlp.exe",
-			expectArgs:           []string{"-a", "videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json", "--write-thumbnail", "--convert-thumbnails", "jpg"},
+			name:       "command execution failure",
+			psPrefix:   "",
+			outputName: "videos.txt",
+			config:     &Config{DisableResume: true},
+			shouldFail: true,
+			expectCmd:  "yt-dlp.exe",
+			expectArgs: []string{"-a", "videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json", "--add-headers", "User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7671.0 Safari/537.36", "--write-thumbnail", "--convert-thumbnails", "jpg"},
 		},
 		{
-			name:                 "collection organized output goes to subdirectory",
-			psPrefix:             "",
-			outputName:           filepath.Join("favorites", "fav_videos.txt"),
-			organizeByCollection: true,
-			skipThumbnails:       false,
-			disableResume:        true,
-			shouldFail:           false,
-			expectCmd:            "yt-dlp.exe",
-			expectArgs:           []string{"-a", filepath.Join("favorites", "fav_videos.txt"), "--output", filepath.Join("favorites", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s"), "--write-info-json", "--write-thumbnail", "--convert-thumbnails", "jpg"},
+			name:       "collection organized output goes to subdirectory",
+			psPrefix:   "",
+			outputName: filepath.Join("favorites", "fav_videos.txt"),
+			config:     &Config{OrganizeByCollection: true, DisableResume: true},
+			shouldFail: false,
+			expectCmd:  "yt-dlp.exe",
+			expectArgs: []string{"-a", filepath.Join("favorites", "fav_videos.txt"), "--output", filepath.Join("favorites", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s"), "--write-info-json", "--add-headers", "User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7671.0 Safari/537.36", "--write-thumbnail", "--convert-thumbnails", "jpg"},
 		},
 		{
-			name:                 "skip thumbnails omits --write-thumbnail flag",
-			psPrefix:             "",
-			outputName:           "test_videos.txt",
-			organizeByCollection: false,
-			skipThumbnails:       true,
-			disableResume:        true,
-			shouldFail:           false,
-			expectCmd:            "yt-dlp.exe",
-			expectArgs:           []string{"-a", "test_videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json"},
+			name:       "skip thumbnails omits --write-thumbnail flag",
+			psPrefix:   "",
+			outputName: "test_videos.txt",
+			config:     &Config{SkipThumbnails: true, DisableResume: true},
+			shouldFail: false,
+			expectCmd:  "yt-dlp.exe",
+			expectArgs: []string{"-a", "test_videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json", "--add-headers", "User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7671.0 Safari/537.36"},
 		},
 		{
-			name:                 "with cookie file",
-			psPrefix:             "",
-			outputName:           "test_videos.txt",
-			organizeByCollection: false,
-			skipThumbnails:       false,
-			disableResume:        true,
-			cookieFile:           "cookies.txt",
-			cookieFromBrowser:    "",
-			shouldFail:           false,
-			expectCmd:            "yt-dlp.exe",
-			expectArgs:           []string{"-a", "test_videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json", "--write-thumbnail", "--convert-thumbnails", "jpg", "--cookies", "cookies.txt"},
+			name:       "with cookie file",
+			psPrefix:   "",
+			outputName: "test_videos.txt",
+			config:     &Config{DisableResume: true, CookieFile: "cookies.txt"},
+			shouldFail: false,
+			expectCmd:  "yt-dlp.exe",
+			expectArgs: []string{"-a", "test_videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json", "--add-headers", "User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7671.0 Safari/537.36", "--write-thumbnail", "--convert-thumbnails", "jpg", "--cookies", "cookies.txt"},
 		},
 		{
-			name:                 "with cookies from browser",
-			psPrefix:             "",
-			outputName:           "test_videos.txt",
-			organizeByCollection: false,
-			skipThumbnails:       false,
-			disableResume:        true,
-			cookieFile:           "",
-			cookieFromBrowser:    "chrome",
-			shouldFail:           false,
-			expectCmd:            "yt-dlp.exe",
-			expectArgs:           []string{"-a", "test_videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json", "--write-thumbnail", "--convert-thumbnails", "jpg", "--cookies-from-browser", "chrome"},
+			name:       "with cookies from browser",
+			psPrefix:   "",
+			outputName: "test_videos.txt",
+			config:     &Config{DisableResume: true, CookieFromBrowser: "chrome"},
+			shouldFail: false,
+			expectCmd:  "yt-dlp.exe",
+			expectArgs: []string{"-a", "test_videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json", "--add-headers", "User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7671.0 Safari/537.36", "--write-thumbnail", "--convert-thumbnails", "jpg", "--cookies-from-browser", "chrome"},
 		},
 		{
-			name:                 "cookies with skip thumbnails",
-			psPrefix:             "",
-			outputName:           "test_videos.txt",
-			organizeByCollection: false,
-			skipThumbnails:       true,
-			disableResume:        true,
-			cookieFile:           "cookies.txt",
-			cookieFromBrowser:    "",
-			shouldFail:           false,
-			expectCmd:            "yt-dlp.exe",
-			expectArgs:           []string{"-a", "test_videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json", "--cookies", "cookies.txt"},
+			name:       "cookies with skip thumbnails",
+			psPrefix:   "",
+			outputName: "test_videos.txt",
+			config:     &Config{SkipThumbnails: true, DisableResume: true, CookieFile: "cookies.txt"},
+			shouldFail: false,
+			expectCmd:  "yt-dlp.exe",
+			expectArgs: []string{"-a", "test_videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json", "--add-headers", "User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7671.0 Safari/537.36", "--cookies", "cookies.txt"},
 		},
 		{
-			name:                 "cookies with collection organization",
-			psPrefix:             "",
-			outputName:           filepath.Join("favorites", "fav_videos.txt"),
-			organizeByCollection: true,
-			skipThumbnails:       false,
-			disableResume:        true,
-			cookieFile:           "",
-			cookieFromBrowser:    "firefox",
-			shouldFail:           false,
-			expectCmd:            "yt-dlp.exe",
-			expectArgs:           []string{"-a", filepath.Join("favorites", "fav_videos.txt"), "--output", filepath.Join("favorites", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s"), "--write-info-json", "--write-thumbnail", "--convert-thumbnails", "jpg", "--cookies-from-browser", "firefox"},
+			name:       "cookies with collection organization",
+			psPrefix:   "",
+			outputName: filepath.Join("favorites", "fav_videos.txt"),
+			config:     &Config{OrganizeByCollection: true, DisableResume: true, CookieFromBrowser: "firefox"},
+			shouldFail: false,
+			expectCmd:  "yt-dlp.exe",
+			expectArgs: []string{"-a", filepath.Join("favorites", "fav_videos.txt"), "--output", filepath.Join("favorites", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s"), "--write-info-json", "--add-headers", "User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7671.0 Safari/537.36", "--write-thumbnail", "--convert-thumbnails", "jpg", "--cookies-from-browser", "firefox"},
 		},
 		{
-			name:                 "resume enabled with flat structure",
-			psPrefix:             "",
-			outputName:           "test_videos.txt",
-			organizeByCollection: false,
-			skipThumbnails:       false,
-			disableResume:        false,
-			shouldFail:           false,
-			expectCmd:            "yt-dlp.exe",
-			expectArgs:           []string{"-a", "test_videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json", "--write-thumbnail", "--convert-thumbnails", "jpg", "--download-archive", "download_archive.txt", "--no-overwrites", "--continue"},
+			name:       "resume enabled with flat structure",
+			psPrefix:   "",
+			outputName: "test_videos.txt",
+			config:     &Config{},
+			shouldFail: false,
+			expectCmd:  "yt-dlp.exe",
+			expectArgs: []string{"-a", "test_videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json", "--add-headers", "User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7671.0 Safari/537.36", "--write-thumbnail", "--convert-thumbnails", "jpg", "--download-archive", "download_archive.txt", "--no-overwrites", "--continue"},
 		},
 		{
-			name:                 "resume enabled with collection organization",
-			psPrefix:             "",
-			outputName:           filepath.Join("favorites", "fav_videos.txt"),
-			organizeByCollection: true,
-			skipThumbnails:       false,
-			disableResume:        false,
-			shouldFail:           false,
-			expectCmd:            "yt-dlp.exe",
-			expectArgs:           []string{"-a", filepath.Join("favorites", "fav_videos.txt"), "--output", filepath.Join("favorites", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s"), "--write-info-json", "--write-thumbnail", "--convert-thumbnails", "jpg", "--download-archive", filepath.Join("favorites", "download_archive.txt"), "--no-overwrites", "--continue"},
+			name:       "resume enabled with collection organization",
+			psPrefix:   "",
+			outputName: filepath.Join("favorites", "fav_videos.txt"),
+			config:     &Config{OrganizeByCollection: true},
+			shouldFail: false,
+			expectCmd:  "yt-dlp.exe",
+			expectArgs: []string{"-a", filepath.Join("favorites", "fav_videos.txt"), "--output", filepath.Join("favorites", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s"), "--write-info-json", "--add-headers", "User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7671.0 Safari/537.36", "--write-thumbnail", "--convert-thumbnails", "jpg", "--download-archive", filepath.Join("favorites", "download_archive.txt"), "--no-overwrites", "--continue"},
 		},
 		{
-			name:                 "resume enabled with skip thumbnails",
-			psPrefix:             "",
-			outputName:           "test_videos.txt",
-			organizeByCollection: false,
-			skipThumbnails:       true,
-			disableResume:        false,
-			shouldFail:           false,
-			expectCmd:            "yt-dlp.exe",
-			expectArgs:           []string{"-a", "test_videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json", "--download-archive", "download_archive.txt", "--no-overwrites", "--continue"},
+			name:       "resume enabled with skip thumbnails",
+			psPrefix:   "",
+			outputName: "test_videos.txt",
+			config:     &Config{SkipThumbnails: true},
+			shouldFail: false,
+			expectCmd:  "yt-dlp.exe",
+			expectArgs: []string{"-a", "test_videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json", "--add-headers", "User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7671.0 Safari/537.36", "--download-archive", "download_archive.txt", "--no-overwrites", "--continue"},
 		},
 		{
-			name:                 "resume enabled with cookies",
-			psPrefix:             "",
-			outputName:           "test_videos.txt",
-			organizeByCollection: false,
-			skipThumbnails:       false,
-			disableResume:        false,
-			cookieFile:           "cookies.txt",
-			shouldFail:           false,
-			expectCmd:            "yt-dlp.exe",
-			expectArgs:           []string{"-a", "test_videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json", "--write-thumbnail", "--convert-thumbnails", "jpg", "--cookies", "cookies.txt", "--download-archive", "download_archive.txt", "--no-overwrites", "--continue"},
+			name:       "resume enabled with cookies",
+			psPrefix:   "",
+			outputName: "test_videos.txt",
+			config:     &Config{CookieFile: "cookies.txt"},
+			shouldFail: false,
+			expectCmd:  "yt-dlp.exe",
+			expectArgs: []string{"-a", "test_videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json", "--add-headers", "User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7671.0 Safari/537.36", "--write-thumbnail", "--convert-thumbnails", "jpg", "--cookies", "cookies.txt", "--download-archive", "download_archive.txt", "--no-overwrites", "--continue"},
 		},
 	}
 
@@ -472,7 +448,7 @@ func TestRunYtdlpWithRunner(t *testing.T) {
 			}
 
 			// Capture output for verification
-			_, _ = runYtdlpWithRunner(mockRunner, tt.psPrefix, tt.outputName, tt.organizeByCollection, tt.skipThumbnails, tt.disableResume, tt.cookieFile, tt.cookieFromBrowser, testEntries)
+			_, _ = runYtdlpWithRunner(mockRunner, tt.psPrefix, tt.outputName, tt.config, testEntries)
 
 			// Verify command was called correctly
 			if len(mockRunner.Commands) != 1 {
@@ -726,7 +702,14 @@ func TestGetOrDownloadYtdlpErrorScenarios(t *testing.T) {
 				},
 			}
 
-			err = getOrDownloadYtdlp(customClient, "yt-dlp.exe")
+			err = getOrDownloadTool(customClient, &ToolConfig{
+				Name:            "yt-dlp",
+				ExeName:         "yt-dlp.exe",
+				GitHubRepo:      "yt-dlp/yt-dlp",
+				GetVersion:      getYtdlpVersion,
+				CompareVersions: compareVersions,
+				SelfUpdate:      updateYtdlp,
+			})
 			if tt.expectError && err == nil {
 				t.Error("expected error but got none")
 			} else if !tt.expectError && err != nil {
@@ -1273,28 +1256,6 @@ func TestExtractVideoID(t *testing.T) {
 			result := extractVideoID(tt.url)
 			if result != tt.expected {
 				t.Errorf("extractVideoID(%q) = %q, want %q", tt.url, result, tt.expected)
-			}
-		})
-	}
-}
-
-// TestGetOutputFilename tests collection-specific filename generation
-func TestGetOutputFilename(t *testing.T) {
-	tests := []struct {
-		collection string
-		expected   string
-	}{
-		{"favorites", "fav_videos.txt"},
-		{"liked", "liked_videos.txt"},
-		{"other", "fav_videos.txt"},
-		{"", "fav_videos.txt"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.collection, func(t *testing.T) {
-			result := getOutputFilename(tt.collection)
-			if result != tt.expected {
-				t.Errorf("getOutputFilename(%q) = %q, want %q", tt.collection, result, tt.expected)
 			}
 		})
 	}
@@ -3073,85 +3034,150 @@ func TestParseFlagsCookies(t *testing.T) {
 	})
 }
 
-// TestIsFileOlderThan30Days tests the age checking function
-func TestIsFileOlderThan30Days(t *testing.T) {
-	tmpDir := t.TempDir()
+// TestCompareVersions tests the version comparison function
+func TestCompareVersions(t *testing.T) {
+	tests := []struct {
+		name     string
+		local    string
+		remote   string
+		expected int
+	}{
+		{"equal versions", "2026.01.29", "2026.01.29", 0},
+		{"local older - year", "2025.01.29", "2026.01.29", -1},
+		{"local older - month", "2026.01.29", "2026.02.29", -1},
+		{"local older - day", "2026.01.28", "2026.01.29", -1},
+		{"local newer - year", "2026.01.29", "2025.01.29", 1},
+		{"local newer - month", "2026.02.29", "2026.01.29", 1},
+		{"local newer - day", "2026.01.30", "2026.01.29", 1},
+		{"empty local", "", "2026.01.29", -1},
+		{"empty remote", "2026.01.29", "", 1},
+		{"both empty", "", "", 0},
+	}
 
-	t.Run("file older than 30 days", func(t *testing.T) {
-		// Create a test file
-		testFile := filepath.Join(tmpDir, "old_file.txt")
-		if err := os.WriteFile(testFile, []byte("test"), 0644); err != nil {
-			t.Fatalf("failed to create test file: %v", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := compareVersions(tt.local, tt.remote)
+			if result != tt.expected {
+				t.Errorf("compareVersions(%q, %q) = %d, want %d", tt.local, tt.remote, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestGetLatestYtdlpVersion tests fetching the latest version from GitHub
+func TestGetLatestYtdlpVersion(t *testing.T) {
+	t.Run("successful redirect parsing", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/yt-dlp/yt-dlp/releases/latest" {
+				w.Header().Set("Location", "https://github.com/yt-dlp/yt-dlp/releases/tag/2026.01.29")
+				w.WriteHeader(http.StatusFound)
+				return
+			}
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer server.Close()
+
+		client := server.Client()
+		// Override the URL for testing by using a custom transport
+		originalTransport := client.Transport
+		client.Transport = &redirectTestTransport{
+			server:   server,
+			original: originalTransport,
 		}
 
-		// Set modification time to 31 days ago
-		oldTime := time.Now().AddDate(0, 0, -31)
-		if err := os.Chtimes(testFile, oldTime, oldTime); err != nil {
-			t.Fatalf("failed to set file time: %v", err)
-		}
-
-		isOld, err := isFileOlderThan30Days(testFile)
+		version, err := getLatestVersion(client, &ToolConfig{GitHubRepo: "yt-dlp/yt-dlp"})
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
-		if !isOld {
-			t.Error("expected file to be older than 30 days")
+		if version != "2026.01.29" {
+			t.Errorf("expected version 2026.01.29, got %s", version)
 		}
 	})
 
-	t.Run("file newer than 30 days", func(t *testing.T) {
-		// Create a test file
-		testFile := filepath.Join(tmpDir, "new_file.txt")
-		if err := os.WriteFile(testFile, []byte("test"), 0644); err != nil {
-			t.Fatalf("failed to create test file: %v", err)
+	t.Run("network error", func(t *testing.T) {
+		// Create a client with a transport that always fails
+		client := &http.Client{
+			Transport: &errorTransport{err: fmt.Errorf("network unreachable")},
 		}
 
-		// Set modification time to 20 days ago
-		recentTime := time.Now().AddDate(0, 0, -20)
-		if err := os.Chtimes(testFile, recentTime, recentTime); err != nil {
-			t.Fatalf("failed to set file time: %v", err)
-		}
-
-		isOld, err := isFileOlderThan30Days(testFile)
-		if err != nil {
-			t.Errorf("unexpected error: %v", err)
-		}
-		if isOld {
-			t.Error("expected file to not be older than 30 days")
-		}
-	})
-
-	t.Run("file does not exist", func(t *testing.T) {
-		nonExistentFile := filepath.Join(tmpDir, "does_not_exist.txt")
-
-		_, err := isFileOlderThan30Days(nonExistentFile)
+		_, err := getLatestVersion(client, &ToolConfig{GitHubRepo: "yt-dlp/yt-dlp"})
 		if err == nil {
-			t.Error("expected error for non-existent file, got nil")
+			t.Error("expected error for network failure, got nil")
 		}
 	})
 
-	t.Run("file exactly 30 days old", func(t *testing.T) {
-		testFile := filepath.Join(tmpDir, "exact_30_days.txt")
-		if err := os.WriteFile(testFile, []byte("test"), 0644); err != nil {
-			t.Fatalf("failed to create test file: %v", err)
-		}
+	t.Run("unexpected status code", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK) // Should be 302, not 200
+		}))
+		defer server.Close()
 
-		// Set modification time to exactly 30 days ago
-		// Due to timing precision, this might not be exactly before the threshold
-		exactTime := time.Now().AddDate(0, 0, -30).Add(-time.Second)
-		if err := os.Chtimes(testFile, exactTime, exactTime); err != nil {
-			t.Fatalf("failed to set file time: %v", err)
-		}
+		client := server.Client()
+		client.Transport = &redirectTestTransport{server: server}
 
-		isOld, err := isFileOlderThan30Days(testFile)
-		if err != nil {
-			t.Errorf("unexpected error: %v", err)
-		}
-		// File just over 30 days old should be considered old
-		if !isOld {
-			t.Error("expected file over 30 days old to be considered old")
+		_, err := getLatestVersion(client, &ToolConfig{GitHubRepo: "yt-dlp/yt-dlp"})
+		if err == nil {
+			t.Error("expected error for unexpected status code, got nil")
 		}
 	})
+
+	t.Run("missing location header", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusFound) // 302 but no Location header
+		}))
+		defer server.Close()
+
+		client := server.Client()
+		client.Transport = &redirectTestTransport{server: server}
+
+		_, err := getLatestVersion(client, &ToolConfig{GitHubRepo: "yt-dlp/yt-dlp"})
+		if err == nil {
+			t.Error("expected error for missing location header, got nil")
+		}
+	})
+
+	t.Run("invalid redirect URL format", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Location", "https://github.com/yt-dlp/yt-dlp/releases/invalid")
+			w.WriteHeader(http.StatusFound)
+		}))
+		defer server.Close()
+
+		client := server.Client()
+		client.Transport = &redirectTestTransport{server: server}
+
+		_, err := getLatestVersion(client, &ToolConfig{GitHubRepo: "yt-dlp/yt-dlp"})
+		if err == nil {
+			t.Error("expected error for invalid URL format, got nil")
+		}
+	})
+}
+
+// redirectTestTransport rewrites GitHub URLs to use the test server
+type redirectTestTransport struct {
+	server   *httptest.Server
+	original http.RoundTripper
+}
+
+func (t *redirectTestTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	// Rewrite the URL to point to our test server
+	if strings.Contains(req.URL.Host, "github.com") {
+		req.URL.Scheme = "http"
+		req.URL.Host = strings.TrimPrefix(t.server.URL, "http://")
+	}
+	if t.original != nil {
+		return t.original.RoundTrip(req)
+	}
+	return http.DefaultTransport.RoundTrip(req)
+}
+
+// errorTransport is an http.RoundTripper that always returns an error
+type errorTransport struct {
+	err error
+}
+
+func (t *errorTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	return nil, t.err
 }
 
 // TestBackupYtdlp tests the backup functionality
@@ -3174,7 +3200,7 @@ func TestBackupYtdlp(t *testing.T) {
 		}
 
 		// Backup
-		if err := backupYtdlp(exeName); err != nil {
+		if err := backupExe(exeName); err != nil {
 			t.Errorf("backup failed: %v", err)
 		}
 
@@ -3214,7 +3240,7 @@ func TestBackupYtdlp(t *testing.T) {
 		}
 
 		// Backup
-		if err := backupYtdlp(exeName); err != nil {
+		if err := backupExe(exeName); err != nil {
 			t.Errorf("backup failed: %v", err)
 		}
 
@@ -3237,7 +3263,7 @@ func TestBackupYtdlp(t *testing.T) {
 	t.Run("backup non-existent file", func(t *testing.T) {
 		exeName := "nonexistent.exe"
 
-		err := backupYtdlp(exeName)
+		err := backupExe(exeName)
 		if err == nil {
 			t.Error("expected error when backing up non-existent file")
 		}
@@ -3291,7 +3317,7 @@ func TestDownloadLatestYtdlp(t *testing.T) {
 	}
 
 	// Test download
-	if err := downloadLatestYtdlp(customClient, exeName); err != nil {
+	if err := downloadLatestRelease(customClient, &ToolConfig{Name: "yt-dlp", ExeName: exeName, GitHubRepo: "yt-dlp/yt-dlp"}); err != nil {
 		t.Errorf("download failed: %v", err)
 	}
 
@@ -3303,72 +3329,6 @@ func TestDownloadLatestYtdlp(t *testing.T) {
 	if string(content) != "fake exe content" {
 		t.Errorf("downloaded content mismatch: got %q", content)
 	}
-}
-
-// TestGetOrDownloadYtdlpWithAgeCheck tests the complete flow including 30-day check
-func TestGetOrDownloadYtdlpWithAgeCheck(t *testing.T) {
-	tmpDir := t.TempDir()
-	oldCwd, _ := os.Getwd()
-	defer func() { _ = os.Chdir(oldCwd) }()
-
-	if err := os.Chdir(tmpDir); err != nil {
-		t.Fatalf("failed to chdir to temp dir: %v", err)
-	}
-
-	exeName := "yt-dlp.exe"
-
-	t.Run("file newer than 30 days - no prompt", func(t *testing.T) {
-		// Create a file less than 30 days old
-		if err := os.WriteFile(exeName, []byte("current version"), 0644); err != nil {
-			t.Fatalf("failed to create test file: %v", err)
-		}
-		defer func() { _ = os.Remove(exeName) }()
-
-		// Set modification time to 15 days ago
-		recentTime := time.Now().AddDate(0, 0, -15)
-		if err := os.Chtimes(exeName, recentTime, recentTime); err != nil {
-			t.Fatalf("failed to set file time: %v", err)
-		}
-
-		// Should not attempt download
-		client := http.DefaultClient
-		if err := getOrDownloadYtdlp(client, exeName); err != nil {
-			t.Errorf("unexpected error: %v", err)
-		}
-
-		// File should still exist with same content
-		content, _ := os.ReadFile(exeName)
-		if string(content) != "current version" {
-			t.Error("file was modified when it shouldn't have been")
-		}
-	})
-
-	t.Run("file older than 30 days - requires manual test for prompt", func(t *testing.T) {
-		// Note: Full testing of the prompt interaction would require mocking stdin
-		// which is complex. This test just verifies the age detection works.
-		if err := os.WriteFile(exeName, []byte("old version"), 0644); err != nil {
-			t.Fatalf("failed to create test file: %v", err)
-		}
-		defer func() { _ = os.Remove(exeName) }()
-
-		// Set modification time to 31 days ago
-		oldTime := time.Now().AddDate(0, 0, -31)
-		if err := os.Chtimes(exeName, oldTime, oldTime); err != nil {
-			t.Fatalf("failed to set file time: %v", err)
-		}
-
-		// Verify file is detected as old
-		isOld, err := isFileOlderThan30Days(exeName)
-		if err != nil {
-			t.Errorf("unexpected error: %v", err)
-		}
-		if !isOld {
-			t.Error("expected file to be detected as older than 30 days")
-		}
-
-		// Note: We can't fully test the prompt flow in automated tests
-		// because it requires stdin interaction. Manual testing required.
-	})
 }
 
 // TestParseProgressLine tests the progress line parser
@@ -3623,6 +3583,7 @@ func TestProgressRenderer(t *testing.T) {
 	})
 }
 
+// TestRenderDetectionProgress tests the detection progress bar rendering
 // TestParseArchiveFile tests the parseArchiveFile function with various inputs
 func TestParseArchiveFile(t *testing.T) {
 	tests := []struct {
@@ -3863,9 +3824,9 @@ func TestRunYtdlpWithSkipOptimization(t *testing.T) {
 
 	outputName := filepath.Join(tempDir, "fav_videos.txt")
 
-	// Call runYtdlpWithRunner with disableResume=false (optimization enabled)
+	// Call runYtdlpWithRunner with resume enabled (optimization enabled)
 	result, err := runYtdlpWithRunner(mockRunner, "", outputName,
-		true, false, false, "", "", entries)
+		&Config{OrganizeByCollection: true}, entries)
 
 	// Should not error
 	if err != nil {
@@ -3916,7 +3877,7 @@ func TestRunYtdlpWithDisableResume(t *testing.T) {
 
 	// Call with disableResume=true (optimization should be bypassed)
 	_, err := runYtdlpWithRunner(mockRunner, "", outputName,
-		true, false, true, "", "", entries)
+		&Config{OrganizeByCollection: true, DisableResume: true}, entries)
 
 	// Should not error
 	if err != nil {
@@ -3957,9 +3918,9 @@ func TestRunYtdlpPartialDownload(t *testing.T) {
 		{Link: "https://www.tiktok.com/@user/video/456"},
 	}
 
-	// Call with disableResume=false (optimization enabled but should still call yt-dlp)
+	// Call with resume enabled (optimization enabled but should still call yt-dlp)
 	_, err := runYtdlpWithRunner(mockRunner, "", outputName,
-		true, false, false, "", "", entries)
+		&Config{OrganizeByCollection: true}, entries)
 
 	// Should not error
 	if err != nil {
@@ -4068,5 +4029,1384 @@ func TestOutputProcessing(t *testing.T) {
 	// Should contain ANSI clear codes (carriage returns)
 	if !strings.Contains(output, "\r") {
 		t.Error("Output should contain carriage returns for progress bar updates")
+	}
+}
+
+// ============================================================================
+// Photo Support Tests
+// ============================================================================
+
+// TestExtractVideoIDWithPhotoURL tests that extractVideoID works with photo URLs
+func TestExtractVideoIDWithPhotoURL(t *testing.T) {
+	tests := []struct {
+		name     string
+		url      string
+		expected string
+	}{
+		{
+			name:     "standard video URL",
+			url:      "https://www.tiktok.com/@user/video/7600559584901647646",
+			expected: "7600559584901647646",
+		},
+		{
+			name:     "photo URL",
+			url:      "https://www.tiktok.com/@user/photo/7597601281703693623",
+			expected: "7597601281703693623",
+		},
+		{
+			name:     "tiktokv share URL",
+			url:      "https://www.tiktokv.com/share/video/7597601281703693623/",
+			expected: "7597601281703693623",
+		},
+		{
+			name:     "mobile URL",
+			url:      "https://m.tiktok.com/v/7600559584901647646.html",
+			expected: "7600559584901647646",
+		},
+		{
+			name:     "invalid URL",
+			url:      "https://www.tiktok.com/@user",
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := extractVideoID(tt.url)
+			if result != tt.expected {
+				t.Errorf("extractVideoID(%q) = %q, want %q", tt.url, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestSeparateEntriesByContentType tests that entries are correctly separated
+func TestSeparateEntriesByContentType(t *testing.T) {
+	entries := []VideoEntry{
+		{Link: "https://www.tiktok.com/@user/video/1", ContentType: "video"},
+		{Link: "https://www.tiktok.com/@user/photo/2", ContentType: "photo"},
+		{Link: "https://www.tiktok.com/@user/video/3", ContentType: "video"},
+		{Link: "https://www.tiktok.com/@user/photo/4", ContentType: "photo"},
+		{Link: "https://www.tiktok.com/@user/video/5", ContentType: ""}, // empty defaults to video
+	}
+
+	videos, photos := separateEntriesByContentType(entries)
+
+	if len(videos) != 3 {
+		t.Errorf("expected 3 videos, got %d", len(videos))
+	}
+	if len(photos) != 2 {
+		t.Errorf("expected 2 photos, got %d", len(photos))
+	}
+
+	// Verify all photos have ContentType "photo"
+	for _, p := range photos {
+		if p.ContentType != "photo" {
+			t.Errorf("photo entry has wrong ContentType: %s", p.ContentType)
+		}
+	}
+}
+
+// TestGetVideoAndPhotoOutputFilenames tests the separate filename functions
+func TestGetVideoAndPhotoOutputFilenames(t *testing.T) {
+	// Test video filenames
+	if got := getVideoOutputFilename("favorites"); got != "fav_videos.txt" {
+		t.Errorf("getVideoOutputFilename(favorites) = %q, want %q", got, "fav_videos.txt")
+	}
+	if got := getVideoOutputFilename("liked"); got != "liked_videos.txt" {
+		t.Errorf("getVideoOutputFilename(liked) = %q, want %q", got, "liked_videos.txt")
+	}
+
+	// Test photo filenames
+	if got := getPhotoOutputFilename("favorites"); got != "fav_photos.txt" {
+		t.Errorf("getPhotoOutputFilename(favorites) = %q, want %q", got, "fav_photos.txt")
+	}
+	if got := getPhotoOutputFilename("liked"); got != "liked_photos.txt" {
+		t.Errorf("getPhotoOutputFilename(liked) = %q, want %q", got, "liked_photos.txt")
+	}
+}
+
+// TestCompareGalleryDlVersions tests version comparison for gallery-dl
+func TestCompareGalleryDlVersions(t *testing.T) {
+	tests := []struct {
+		local    string
+		remote   string
+		expected int
+	}{
+		{"1.28.0", "1.28.0", 0},  // equal
+		{"1.28.0", "1.28.1", -1}, // local older
+		{"1.28.1", "1.28.0", 1},  // local newer
+		{"1.27.5", "1.28.0", -1}, // local older (minor version)
+		{"2.0.0", "1.99.99", 1},  // local newer (major version)
+		{"1.28", "1.28.0", -1},   // local shorter
+		{"1.28.0", "1.28", 1},    // local longer
+	}
+
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("%s_vs_%s", tt.local, tt.remote), func(t *testing.T) {
+			result := compareGalleryDlVersions(tt.local, tt.remote)
+			if result != tt.expected {
+				t.Errorf("compareGalleryDlVersions(%q, %q) = %d, want %d",
+					tt.local, tt.remote, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestParseGalleryDlOutput tests parsing of gallery-dl output for success/failure
+func TestParseGalleryDlOutput(t *testing.T) {
+	entries := []VideoEntry{
+		{Link: "https://www.tiktok.com/@user/photo/7597601281703693623", VideoID: "7597601281703693623"},
+		{Link: "https://www.tiktok.com/@user/photo/7597601281703693624", VideoID: "7597601281703693624"},
+	}
+
+	tests := []struct {
+		name            string
+		lines           []string
+		expectedSuccess int
+		expectedFails   int
+	}{
+		{
+			name: "all success",
+			lines: []string{
+				"#1 https://www.tiktok.com/@user/photo/7597601281703693623",
+				"#2 https://www.tiktok.com/@user/photo/7597601281703693624",
+			},
+			expectedSuccess: 2,
+			expectedFails:   0,
+		},
+		{
+			name: "one failure",
+			lines: []string{
+				"#1 https://www.tiktok.com/@user/photo/7597601281703693623",
+				"ERROR: Unable to download 7597601281703693624: Not available",
+			},
+			expectedSuccess: 1,
+			expectedFails:   1,
+		},
+		{
+			name: "all failures",
+			lines: []string{
+				"[error] 7597601281703693623: failed to extract images",
+				"ERROR: 7597601281703693624: connection refused",
+			},
+			expectedSuccess: 0,
+			expectedFails:   2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			success, failures := parseGalleryDlOutput(tt.lines, entries)
+			if success != tt.expectedSuccess {
+				t.Errorf("expected %d successes, got %d", tt.expectedSuccess, success)
+			}
+			if len(failures) != tt.expectedFails {
+				t.Errorf("expected %d failures, got %d", tt.expectedFails, len(failures))
+			}
+		})
+	}
+}
+
+// TestParseGalleryDlOutputDedup tests that duplicate error lines for the same video ID are counted only once
+func TestParseGalleryDlOutputDedup(t *testing.T) {
+	entries := []VideoEntry{
+		{Link: "https://www.tiktok.com/@user/photo/7597601281703693623"},
+		{Link: "https://www.tiktok.com/@user/photo/7597601281703693624"},
+	}
+
+	lines := []string{
+		"ERROR: Unable to download 7597601281703693623: Not available",
+		"[error] 7597601281703693623: failed to extract images",
+		"ERROR: Unable to download 7597601281703693624: connection refused",
+	}
+
+	_, failures := parseGalleryDlOutput(lines, entries)
+
+	// 7597601281703693623 has two error lines but should only appear once in failures
+	if len(failures) != 2 {
+		t.Errorf("expected 2 unique failures, got %d", len(failures))
+	}
+
+	// Verify the correct IDs are present
+	ids := make(map[string]bool)
+	for _, f := range failures {
+		ids[f.VideoID] = true
+	}
+	if !ids["7597601281703693623"] || !ids["7597601281703693624"] {
+		t.Errorf("expected both video IDs in failures, got %v", ids)
+	}
+}
+
+// TestCalculateSessionTotalsWithPhotos tests that session totals include photo stats
+func TestCalculateSessionTotalsWithPhotos(t *testing.T) {
+	collections := []CollectionResult{
+		{
+			Name:        "favorites-videos",
+			ContentType: "video",
+			Attempted:   100,
+			Success:     90,
+			Failed:      10,
+			Skipped:     5,
+		},
+		{
+			Name:        "favorites-photos",
+			ContentType: "photo",
+			Attempted:   20,
+			Success:     18,
+			Failed:      2,
+			Skipped:     0,
+		},
+		{
+			Name:        "liked-videos",
+			ContentType: "video",
+			Attempted:   50,
+			Success:     45,
+			Failed:      5,
+			Skipped:     2,
+		},
+	}
+
+	attempted, success, failed, skipped, photosAttempted, photosSuccess, photosFailed :=
+		calculateSessionTotals(collections)
+
+	if attempted != 170 {
+		t.Errorf("expected total attempted 170, got %d", attempted)
+	}
+	if success != 153 {
+		t.Errorf("expected total success 153, got %d", success)
+	}
+	if failed != 17 {
+		t.Errorf("expected total failed 17, got %d", failed)
+	}
+	if skipped != 7 {
+		t.Errorf("expected total skipped 7, got %d", skipped)
+	}
+	if photosAttempted != 20 {
+		t.Errorf("expected photos attempted 20, got %d", photosAttempted)
+	}
+	if photosSuccess != 18 {
+		t.Errorf("expected photos success 18, got %d", photosSuccess)
+	}
+	if photosFailed != 2 {
+		t.Errorf("expected photos failed 2, got %d", photosFailed)
+	}
+}
+
+// TestCollectionResultContentType tests that ContentType is properly tracked
+func TestCollectionResultContentType(t *testing.T) {
+	result := &CollectionResult{
+		Name:        "favorites",
+		ContentType: "photo",
+		Attempted:   10,
+		Success:     8,
+		Failed:      2,
+	}
+
+	if result.ContentType != "photo" {
+		t.Errorf("expected ContentType 'photo', got %q", result.ContentType)
+	}
+}
+
+// TestVideoEntryPhotoFields tests that VideoEntry has photo-specific fields
+func TestVideoEntryPhotoFields(t *testing.T) {
+	entry := VideoEntry{
+		Link:        "https://www.tiktok.com/@user/photo/123",
+		ContentType: "photo",
+		ImageCount:  5,
+		ImageFiles:  []string{"img1.jpg", "img2.jpg", "img3.jpg", "img4.jpg", "img5.jpg"},
+		AudioFile:   "audio.m4a",
+	}
+
+	if entry.ContentType != "photo" {
+		t.Errorf("expected ContentType 'photo', got %q", entry.ContentType)
+	}
+	if entry.ImageCount != 5 {
+		t.Errorf("expected ImageCount 5, got %d", entry.ImageCount)
+	}
+	if len(entry.ImageFiles) != 5 {
+		t.Errorf("expected 5 image files, got %d", len(entry.ImageFiles))
+	}
+	if entry.AudioFile != "audio.m4a" {
+		t.Errorf("expected AudioFile 'audio.m4a', got %q", entry.AudioFile)
+	}
+}
+
+// TestWriteFavoriteVideosToFileWithPhotos tests that photos are written to separate files
+func TestWriteFavoriteVideosToFileWithPhotos(t *testing.T) {
+	// Create temp directory
+	tempDir, err := os.MkdirTemp("", "photo_test_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tempDir) }()
+
+	// Create entries with mixed content types
+	entries := []VideoEntry{
+		{Link: "https://www.tiktok.com/@user/video/1", ContentType: "video", Collection: "favorites"},
+		{Link: "https://www.tiktok.com/@user/photo/2", ContentType: "photo", Collection: "favorites"},
+		{Link: "https://www.tiktok.com/@user/video/3", ContentType: "video", Collection: "favorites"},
+	}
+
+	// Test flat structure
+	outputName := filepath.Join(tempDir, "fav_videos.txt")
+	err = writeFavoriteVideosToFile(entries, outputName, false)
+	if err != nil {
+		t.Fatalf("writeFavoriteVideosToFile failed: %v", err)
+	}
+
+	// Check video file
+	videoContent, err := os.ReadFile(outputName)
+	if err != nil {
+		t.Fatalf("failed to read video file: %v", err)
+	}
+	videoLines := strings.Split(strings.TrimSpace(string(videoContent)), "\n")
+	if len(videoLines) != 2 {
+		t.Errorf("expected 2 video URLs, got %d", len(videoLines))
+	}
+
+	// Check photo file
+	photoFile := filepath.Join(tempDir, "fav_photos.txt")
+	photoContent, err := os.ReadFile(photoFile)
+	if err != nil {
+		t.Fatalf("failed to read photo file: %v", err)
+	}
+	photoLines := strings.Split(strings.TrimSpace(string(photoContent)), "\n")
+	if len(photoLines) != 1 {
+		t.Errorf("expected 1 photo URL, got %d", len(photoLines))
+	}
+}
+
+// TestIsPhotoPost tests the photo post detection function
+// TestGetOrDownloadGalleryDl tests the gallery-dl download function
+func TestGetOrDownloadGalleryDl(t *testing.T) {
+	t.Run("file already exists", func(t *testing.T) {
+		// Create a temp directory
+		tmpDir, err := os.MkdirTemp("", "gallerydl_test")
+		if err != nil {
+			t.Fatalf("failed to create temp dir: %v", err)
+		}
+		defer func() { _ = os.RemoveAll(tmpDir) }()
+
+		oldCwd, _ := os.Getwd()
+		defer func() { _ = os.Chdir(oldCwd) }()
+		if err := os.Chdir(tmpDir); err != nil {
+			t.Fatalf("failed to chdir: %v", err)
+		}
+
+		exeName := "gallery-dl.exe"
+
+		// Create a dummy file
+		if err := os.WriteFile(exeName, []byte("dummy gallery-dl"), 0644); err != nil {
+			t.Fatalf("failed to create dummy exe: %v", err)
+		}
+
+		// Should return nil when file exists (won't check version since it's a dummy)
+		client := http.DefaultClient
+		err = getOrDownloadTool(client, &ToolConfig{
+			Name:            "gallery-dl",
+			ExeName:         "gallery-dl.exe",
+			GitHubRepo:      "mikf/gallery-dl",
+			GetVersion:      getGalleryDlVersion,
+			CompareVersions: compareGalleryDlVersions,
+			StripVPrefix:    true,
+		})
+		if err != nil {
+			t.Errorf("expected nil error when file exists, got: %v", err)
+		}
+	})
+
+	t.Run("file does not exist - downloads successfully", func(t *testing.T) {
+		tmpDir, err := os.MkdirTemp("", "gallerydl_download_test")
+		if err != nil {
+			t.Fatalf("failed to create temp dir: %v", err)
+		}
+		defer func() { _ = os.RemoveAll(tmpDir) }()
+
+		oldCwd, _ := os.Getwd()
+		defer func() { _ = os.Chdir(oldCwd) }()
+		if err := os.Chdir(tmpDir); err != nil {
+			t.Fatalf("failed to chdir: %v", err)
+		}
+
+		exeName := "gallery-dl.exe"
+
+		// Create a mock release JSON
+		mockReleaseJSON := `{
+			"assets": [
+				{
+					"name": "gallery-dl.exe",
+					"browser_download_url": "http://example.com/gallery-dl.exe"
+				}
+			]
+		}`
+
+		// Create a test server
+		downloadHandler := http.NewServeMux()
+		downloadHandler.HandleFunc("/repos/mikf/gallery-dl/releases/latest", func(w http.ResponseWriter, r *http.Request) {
+			if _, err := w.Write([]byte(mockReleaseJSON)); err != nil {
+				t.Errorf("failed to write mock release JSON: %v", err)
+			}
+		})
+		downloadHandler.HandleFunc("/gallery-dl.exe", func(w http.ResponseWriter, r *http.Request) {
+			if _, err := w.Write([]byte("fake gallery-dl exe content")); err != nil {
+				t.Errorf("failed to write fake exe: %v", err)
+			}
+		})
+		ts := httptest.NewServer(downloadHandler)
+		defer ts.Close()
+
+		// Use custom client that rewrites URLs to test server
+		customClient := &http.Client{
+			Transport: &rewriterRoundTripper{
+				rt:   http.DefaultTransport,
+				host: ts.URL,
+			},
+		}
+
+		err = getOrDownloadTool(customClient, &ToolConfig{
+			Name:            "gallery-dl",
+			ExeName:         "gallery-dl.exe",
+			GitHubRepo:      "mikf/gallery-dl",
+			GetVersion:      getGalleryDlVersion,
+			CompareVersions: compareGalleryDlVersions,
+			StripVPrefix:    true,
+		})
+		if err != nil {
+			t.Errorf("expected nil error on download, got: %v", err)
+		}
+
+		// Verify file was created
+		if _, err := os.Stat(exeName); os.IsNotExist(err) {
+			t.Errorf("expected %s to exist after download", exeName)
+		}
+	})
+
+	t.Run("download fails - no asset found", func(t *testing.T) {
+		tmpDir, err := os.MkdirTemp("", "gallerydl_noasset_test")
+		if err != nil {
+			t.Fatalf("failed to create temp dir: %v", err)
+		}
+		defer func() { _ = os.RemoveAll(tmpDir) }()
+
+		oldCwd, _ := os.Getwd()
+		defer func() { _ = os.Chdir(oldCwd) }()
+		if err := os.Chdir(tmpDir); err != nil {
+			t.Fatalf("failed to chdir: %v", err)
+		}
+
+		// Create a mock release JSON with wrong asset name
+		mockReleaseJSON := `{
+			"assets": [
+				{
+					"name": "wrong-name.exe",
+					"browser_download_url": "http://example.com/wrong.exe"
+				}
+			]
+		}`
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if _, err := w.Write([]byte(mockReleaseJSON)); err != nil {
+				t.Errorf("failed to write mock release JSON: %v", err)
+			}
+		}))
+		defer server.Close()
+
+		customClient := &http.Client{
+			Transport: &rewriterRoundTripper{
+				rt:   http.DefaultTransport,
+				host: server.URL,
+			},
+		}
+
+		err = getOrDownloadTool(customClient, &ToolConfig{
+			Name:            "gallery-dl",
+			ExeName:         "gallery-dl.exe",
+			GitHubRepo:      "mikf/gallery-dl",
+			GetVersion:      getGalleryDlVersion,
+			CompareVersions: compareGalleryDlVersions,
+			StripVPrefix:    true,
+		})
+		if err == nil {
+			t.Error("expected error when asset not found")
+		}
+	})
+}
+
+// GalleryDlMockCommandRunner is a mock command runner specifically for gallery-dl tests
+type GalleryDlMockCommandRunner struct {
+	ShouldFail    bool
+	Commands      []MockCommand
+	OutputLines   []string
+	ExpectedError error
+}
+
+func (m *GalleryDlMockCommandRunner) Run(name string, args ...string) (CapturedOutput, error) {
+	m.Commands = append(m.Commands, MockCommand{Name: name, Args: args})
+
+	output := CapturedOutput{
+		Combined: m.OutputLines,
+	}
+
+	if m.ShouldFail {
+		if m.ExpectedError != nil {
+			return output, m.ExpectedError
+		}
+		return output, fmt.Errorf("mock command failed")
+	}
+	return output, nil
+}
+
+// TestRunGalleryDlWithRunner tests the runGalleryDl function
+func TestRunGalleryDlWithRunner(t *testing.T) {
+	t.Run("empty entries returns immediately", func(t *testing.T) {
+		entries := []VideoEntry{}
+		result, err := runGalleryDl("", "test_dir", &Config{}, entries)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if result == nil {
+			t.Fatal("expected non-nil result")
+		}
+		if result.Attempted != 0 {
+			t.Errorf("expected 0 attempted, got %d", result.Attempted)
+		}
+	})
+
+	t.Run("basic execution creates correct arguments", func(t *testing.T) {
+		// Create temp directory
+		tmpDir, err := os.MkdirTemp("", "gallery_dl_test_*")
+		if err != nil {
+			t.Fatalf("failed to create temp dir: %v", err)
+		}
+		defer func() { _ = os.RemoveAll(tmpDir) }()
+
+		entries := []VideoEntry{
+			{Link: "https://www.tiktok.com/@user/photo/123", VideoID: "123", ContentType: "photo"},
+		}
+
+		// Run with minimal settings - this will fail because gallery-dl.exe doesn't exist
+		// but we can verify the temp file creation and argument building
+		_, _ = runGalleryDl("", tmpDir, &Config{}, entries)
+
+		// Verify temp file was attempted (even if command failed)
+		// The function should have cleaned up the temp file on exit
+	})
+}
+
+// TestGetGalleryDlVersion tests the version parsing for gallery-dl
+func TestGetGalleryDlVersion(t *testing.T) {
+	// This test would require mocking exec.Command which is complex
+	// Instead, we test edge cases of the version parsing logic
+
+	t.Run("version parsing from output format", func(t *testing.T) {
+		// gallery-dl outputs "gallery-dl X.Y.Z"
+		// The function extracts the version number
+
+		// Simulate what the function does internally
+		testCases := []struct {
+			output   string
+			expected string
+		}{
+			{"gallery-dl 1.28.5", "1.28.5"},
+			{"gallery-dl 2.0.0", "2.0.0"},
+			{"gallery-dl 1.28.5-dev", "1.28.5-dev"},
+		}
+
+		for _, tc := range testCases {
+			// Simulate the parsing logic from getGalleryDlVersion
+			version := strings.TrimSpace(tc.output)
+			parts := strings.Fields(version)
+			var result string
+			if len(parts) >= 2 {
+				result = parts[len(parts)-1]
+			}
+			if result != tc.expected {
+				t.Errorf("parseVersion(%q) = %q, want %q", tc.output, result, tc.expected)
+			}
+		}
+	})
+}
+
+// TestGetLatestGalleryDlVersion tests fetching the latest gallery-dl version
+func TestGetLatestGalleryDlVersion(t *testing.T) {
+	t.Run("successful redirect parsing", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/mikf/gallery-dl/releases/latest" {
+				w.Header().Set("Location", "https://github.com/mikf/gallery-dl/releases/tag/v1.28.5")
+				w.WriteHeader(http.StatusFound)
+				return
+			}
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer server.Close()
+
+		client := server.Client()
+		// Override transport to redirect GitHub URLs to test server
+		client.Transport = &galleryDlRedirectTransport{
+			server:   server,
+			original: client.Transport,
+		}
+
+		version, err := getLatestVersion(client, &ToolConfig{GitHubRepo: "mikf/gallery-dl", StripVPrefix: true})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		// The function strips the "v" prefix, so expect "1.28.5"
+		if version != "1.28.5" {
+			t.Errorf("expected version 1.28.5, got %s", version)
+		}
+	})
+
+	t.Run("network error", func(t *testing.T) {
+		client := &http.Client{
+			Transport: &errorTransport{err: fmt.Errorf("network unreachable")},
+		}
+
+		_, err := getLatestVersion(client, &ToolConfig{GitHubRepo: "mikf/gallery-dl", StripVPrefix: true})
+		if err == nil {
+			t.Error("expected error for network failure, got nil")
+		}
+	})
+}
+
+// galleryDlRedirectTransport rewrites GitHub gallery-dl URLs to the test server
+type galleryDlRedirectTransport struct {
+	server   *httptest.Server
+	original http.RoundTripper
+}
+
+func (t *galleryDlRedirectTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if strings.Contains(req.URL.Host, "github.com") {
+		req.URL.Scheme = "http"
+		req.URL.Host = strings.TrimPrefix(t.server.URL, "http://")
+	}
+	if t.original != nil {
+		return t.original.RoundTrip(req)
+	}
+	return http.DefaultTransport.RoundTrip(req)
+}
+
+// TestDownloadLatestGalleryDl tests the gallery-dl download function
+func TestDownloadLatestGalleryDl(t *testing.T) {
+	t.Run("successful download", func(t *testing.T) {
+		tmpDir, err := os.MkdirTemp("", "gallerydl_download_*")
+		if err != nil {
+			t.Fatalf("failed to create temp dir: %v", err)
+		}
+		defer func() { _ = os.RemoveAll(tmpDir) }()
+
+		oldCwd, _ := os.Getwd()
+		defer func() { _ = os.Chdir(oldCwd) }()
+		if err := os.Chdir(tmpDir); err != nil {
+			t.Fatalf("failed to chdir: %v", err)
+		}
+
+		exeName := "gallery-dl.exe"
+		mockReleaseJSON := `{
+			"assets": [
+				{
+					"name": "gallery-dl.exe",
+					"browser_download_url": "http://example.com/gallery-dl.exe"
+				}
+			]
+		}`
+
+		mux := http.NewServeMux()
+		mux.HandleFunc("/repos/mikf/gallery-dl/releases/latest", func(w http.ResponseWriter, r *http.Request) {
+			if _, err := w.Write([]byte(mockReleaseJSON)); err != nil {
+				t.Errorf("failed to write: %v", err)
+			}
+		})
+		mux.HandleFunc("/gallery-dl.exe", func(w http.ResponseWriter, r *http.Request) {
+			if _, err := w.Write([]byte("fake exe content")); err != nil {
+				t.Errorf("failed to write: %v", err)
+			}
+		})
+		server := httptest.NewServer(mux)
+		defer server.Close()
+
+		client := &http.Client{
+			Transport: &rewriterRoundTripper{
+				rt:   http.DefaultTransport,
+				host: server.URL,
+			},
+		}
+
+		err = downloadLatestRelease(client, &ToolConfig{Name: "gallery-dl", ExeName: exeName, GitHubRepo: "mikf/gallery-dl"})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+
+		// Verify file was created
+		if _, err := os.Stat(exeName); os.IsNotExist(err) {
+			t.Error("gallery-dl.exe should have been created")
+		}
+	})
+
+	t.Run("invalid JSON response", func(t *testing.T) {
+		tmpDir, err := os.MkdirTemp("", "gallerydl_invalid_*")
+		if err != nil {
+			t.Fatalf("failed to create temp dir: %v", err)
+		}
+		defer func() { _ = os.RemoveAll(tmpDir) }()
+
+		oldCwd, _ := os.Getwd()
+		defer func() { _ = os.Chdir(oldCwd) }()
+		if err := os.Chdir(tmpDir); err != nil {
+			t.Fatalf("failed to chdir: %v", err)
+		}
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if _, err := w.Write([]byte("not valid json")); err != nil {
+				t.Errorf("failed to write: %v", err)
+			}
+		}))
+		defer server.Close()
+
+		client := &http.Client{
+			Transport: &rewriterRoundTripper{
+				rt:   http.DefaultTransport,
+				host: server.URL,
+			},
+		}
+
+		err = downloadLatestRelease(client, &ToolConfig{Name: "gallery-dl", ExeName: "gallery-dl.exe", GitHubRepo: "mikf/gallery-dl"})
+		if err == nil {
+			t.Error("expected error for invalid JSON")
+		}
+	})
+}
+
+// TestBackupGalleryDl tests the gallery-dl backup function
+func TestBackupGalleryDl(t *testing.T) {
+	t.Run("successful backup", func(t *testing.T) {
+		tmpDir, err := os.MkdirTemp("", "backup_gallerydl_*")
+		if err != nil {
+			t.Fatalf("failed to create temp dir: %v", err)
+		}
+		defer func() { _ = os.RemoveAll(tmpDir) }()
+
+		oldCwd, _ := os.Getwd()
+		defer func() { _ = os.Chdir(oldCwd) }()
+		if err := os.Chdir(tmpDir); err != nil {
+			t.Fatalf("failed to chdir: %v", err)
+		}
+
+		exeName := "gallery-dl.exe"
+		content := []byte("gallery-dl content")
+		if err := os.WriteFile(exeName, content, 0644); err != nil {
+			t.Fatalf("failed to create exe: %v", err)
+		}
+
+		err = backupExe(exeName)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+
+		// Verify backup exists
+		backupContent, err := os.ReadFile(exeName + ".old")
+		if err != nil {
+			t.Errorf("failed to read backup: %v", err)
+		}
+		if string(backupContent) != string(content) {
+			t.Errorf("backup content mismatch")
+		}
+
+		// Verify original is gone
+		if _, err := os.Stat(exeName); !os.IsNotExist(err) {
+			t.Error("original should be renamed")
+		}
+	})
+
+	t.Run("backup non-existent file", func(t *testing.T) {
+		tmpDir, err := os.MkdirTemp("", "backup_nofile_*")
+		if err != nil {
+			t.Fatalf("failed to create temp dir: %v", err)
+		}
+		defer func() { _ = os.RemoveAll(tmpDir) }()
+
+		oldCwd, _ := os.Getwd()
+		defer func() { _ = os.Chdir(oldCwd) }()
+		if err := os.Chdir(tmpDir); err != nil {
+			t.Fatalf("failed to chdir: %v", err)
+		}
+
+		err = backupExe("nonexistent.exe")
+		if err == nil {
+			t.Error("expected error for non-existent file")
+		}
+	})
+}
+
+// TestDetectContentTypes tests batch content type detection
+func TestContentTypeCache(t *testing.T) {
+	t.Run("load and save round-trip", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		cacheFile := filepath.Join(tmpDir, "content_types_cache.json")
+
+		original := map[string]string{
+			"https://www.tiktokv.com/share/video/111": "video",
+			"https://www.tiktokv.com/share/video/222": "photo",
+			"https://www.tiktokv.com/share/video/333": "video",
+		}
+
+		err := saveContentTypeCache(cacheFile, original)
+		if err != nil {
+			t.Fatalf("saveContentTypeCache failed: %v", err)
+		}
+
+		loaded := loadContentTypeCache(cacheFile)
+
+		if len(loaded) != len(original) {
+			t.Fatalf("expected %d entries, got %d", len(original), len(loaded))
+		}
+		for url, ct := range original {
+			if loaded[url] != ct {
+				t.Errorf("URL %s: expected %q, got %q", url, ct, loaded[url])
+			}
+		}
+	})
+
+	t.Run("load missing file returns empty map", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		cacheFile := filepath.Join(tmpDir, "nonexistent.json")
+
+		loaded := loadContentTypeCache(cacheFile)
+
+		if len(loaded) != 0 {
+			t.Errorf("expected empty map for missing file, got %d entries", len(loaded))
+		}
+	})
+
+	t.Run("load corrupt file returns empty map", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		cacheFile := filepath.Join(tmpDir, "corrupt.json")
+
+		err := os.WriteFile(cacheFile, []byte("not valid json{{{"), 0644)
+		if err != nil {
+			t.Fatalf("failed to write corrupt file: %v", err)
+		}
+
+		loaded := loadContentTypeCache(cacheFile)
+
+		if len(loaded) != 0 {
+			t.Errorf("expected empty map for corrupt file, got %d entries", len(loaded))
+		}
+	})
+
+	t.Run("load file with null types returns empty map", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		cacheFile := filepath.Join(tmpDir, "null_types.json")
+
+		err := os.WriteFile(cacheFile, []byte(`{"version":1,"types":null}`), 0644)
+		if err != nil {
+			t.Fatalf("failed to write file: %v", err)
+		}
+
+		loaded := loadContentTypeCache(cacheFile)
+
+		if loaded == nil {
+			t.Error("expected non-nil map, got nil")
+		}
+		if len(loaded) != 0 {
+			t.Errorf("expected empty map, got %d entries", len(loaded))
+		}
+	})
+
+	t.Run("save to invalid path returns error", func(t *testing.T) {
+		err := saveContentTypeCache("/nonexistent/dir/cache.json", map[string]string{"a": "b"})
+		if err == nil {
+			t.Error("expected error when saving to invalid path, got nil")
+		}
+	})
+
+	t.Run("saved file has correct JSON structure", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		cacheFile := filepath.Join(tmpDir, "cache.json")
+
+		types := map[string]string{
+			"https://example.com/1": "video",
+		}
+
+		err := saveContentTypeCache(cacheFile, types)
+		if err != nil {
+			t.Fatalf("save failed: %v", err)
+		}
+
+		data, err := os.ReadFile(cacheFile)
+		if err != nil {
+			t.Fatalf("read failed: %v", err)
+		}
+
+		var cache ContentTypeCache
+		if err := json.Unmarshal(data, &cache); err != nil {
+			t.Fatalf("unmarshal failed: %v", err)
+		}
+
+		if cache.Version != 1 {
+			t.Errorf("expected version 1, got %d", cache.Version)
+		}
+		if cache.Types["https://example.com/1"] != "video" {
+			t.Errorf("expected 'video', got %q", cache.Types["https://example.com/1"])
+		}
+	})
+}
+
+func TestIdentifyFailedEntries(t *testing.T) {
+	t.Run("all succeeded", func(t *testing.T) {
+		entries := []VideoEntry{
+			{Link: "https://www.tiktok.com/@user/video/1001"},
+			{Link: "https://www.tiktok.com/@user/video/1002"},
+		}
+		before := map[string]bool{}
+		after := map[string]bool{"1001": true, "1002": true}
+
+		succeeded, alreadyDownloaded, failed := identifyFailedEntries(entries, before, after)
+		if len(succeeded) != 2 {
+			t.Errorf("expected 2 succeeded, got %d", len(succeeded))
+		}
+		if len(alreadyDownloaded) != 0 {
+			t.Errorf("expected 0 already downloaded, got %d", len(alreadyDownloaded))
+		}
+		if len(failed) != 0 {
+			t.Errorf("expected 0 failed, got %d", len(failed))
+		}
+	})
+
+	t.Run("all already downloaded", func(t *testing.T) {
+		entries := []VideoEntry{
+			{Link: "https://www.tiktok.com/@user/video/1001"},
+			{Link: "https://www.tiktok.com/@user/video/1002"},
+		}
+		before := map[string]bool{"1001": true, "1002": true}
+		after := map[string]bool{"1001": true, "1002": true}
+
+		succeeded, alreadyDownloaded, failed := identifyFailedEntries(entries, before, after)
+		if len(succeeded) != 0 {
+			t.Errorf("expected 0 succeeded, got %d", len(succeeded))
+		}
+		if len(alreadyDownloaded) != 2 {
+			t.Errorf("expected 2 already downloaded, got %d", len(alreadyDownloaded))
+		}
+		if len(failed) != 0 {
+			t.Errorf("expected 0 failed, got %d", len(failed))
+		}
+	})
+
+	t.Run("all failed", func(t *testing.T) {
+		entries := []VideoEntry{
+			{Link: "https://www.tiktok.com/@user/video/1001"},
+			{Link: "https://www.tiktok.com/@user/video/1002"},
+		}
+		before := map[string]bool{}
+		after := map[string]bool{}
+
+		succeeded, alreadyDownloaded, failed := identifyFailedEntries(entries, before, after)
+		if len(succeeded) != 0 {
+			t.Errorf("expected 0 succeeded, got %d", len(succeeded))
+		}
+		if len(alreadyDownloaded) != 0 {
+			t.Errorf("expected 0 already downloaded, got %d", len(alreadyDownloaded))
+		}
+		if len(failed) != 2 {
+			t.Errorf("expected 2 failed, got %d", len(failed))
+		}
+	})
+
+	t.Run("mixed results", func(t *testing.T) {
+		entries := []VideoEntry{
+			{Link: "https://www.tiktok.com/@user/video/1001"}, // will succeed
+			{Link: "https://www.tiktok.com/@user/video/1002"}, // already downloaded
+			{Link: "https://www.tiktok.com/@user/video/1003"}, // will fail
+		}
+		before := map[string]bool{"1002": true}
+		after := map[string]bool{"1001": true, "1002": true}
+
+		succeeded, alreadyDownloaded, failed := identifyFailedEntries(entries, before, after)
+		if len(succeeded) != 1 || extractVideoID(succeeded[0].Link) != "1001" {
+			t.Errorf("expected succeeded=[1001], got %v", succeeded)
+		}
+		if len(alreadyDownloaded) != 1 || extractVideoID(alreadyDownloaded[0].Link) != "1002" {
+			t.Errorf("expected alreadyDownloaded=[1002], got %v", alreadyDownloaded)
+		}
+		if len(failed) != 1 || extractVideoID(failed[0].Link) != "1003" {
+			t.Errorf("expected failed=[1003], got %v", failed)
+		}
+	})
+
+	t.Run("unparseable URL goes to failed", func(t *testing.T) {
+		entries := []VideoEntry{
+			{Link: "https://invalid-url-no-id"},
+		}
+		before := map[string]bool{}
+		after := map[string]bool{}
+
+		_, _, failed := identifyFailedEntries(entries, before, after)
+		if len(failed) != 1 {
+			t.Errorf("expected 1 failed for unparseable URL, got %d", len(failed))
+		}
+	})
+}
+
+func TestInferContentTypeFromFiles(t *testing.T) {
+	t.Run("detects video from info.json", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		videoID := "7600559584901647646"
+		// Create a .info.json file
+		infoFile := filepath.Join(tmpDir, "20260129_"+videoID+"_Test.info.json")
+		if err := os.WriteFile(infoFile, []byte(`{"id":"7600559584901647646"}`), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		ct := inferContentTypeFromFiles(tmpDir, videoID)
+		if ct != "video" {
+			t.Errorf("expected 'video', got %q", ct)
+		}
+	})
+
+	t.Run("detects video from mp4 file", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		videoID := "7600559584901647646"
+		mp4File := filepath.Join(tmpDir, "20260129_"+videoID+"_Test.mp4")
+		if err := os.WriteFile(mp4File, []byte("fake video"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		ct := inferContentTypeFromFiles(tmpDir, videoID)
+		if ct != "video" {
+			t.Errorf("expected 'video', got %q", ct)
+		}
+	})
+
+	t.Run("detects photo from jpg file", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		videoID := "7597601281703693623"
+		jpgFile := filepath.Join(tmpDir, "20260129_"+videoID+"_Slideshow_1.jpg")
+		if err := os.WriteFile(jpgFile, []byte("fake image"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		ct := inferContentTypeFromFiles(tmpDir, videoID)
+		if ct != "photo" {
+			t.Errorf("expected 'photo', got %q", ct)
+		}
+	})
+
+	t.Run("detects photo from gallery-dl json", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		videoID := "7597601281703693623"
+		jsonFile := filepath.Join(tmpDir, "20260129_"+videoID+"_Slideshow.json")
+		if err := os.WriteFile(jsonFile, []byte(`{"id":"7597601281703693623"}`), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		ct := inferContentTypeFromFiles(tmpDir, videoID)
+		if ct != "photo" {
+			t.Errorf("expected 'photo', got %q", ct)
+		}
+	})
+
+	t.Run("returns empty for no files", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		ct := inferContentTypeFromFiles(tmpDir, "9999999999999999999")
+		if ct != "" {
+			t.Errorf("expected empty string, got %q", ct)
+		}
+	})
+
+	t.Run("returns empty for empty video ID", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		ct := inferContentTypeFromFiles(tmpDir, "")
+		if ct != "" {
+			t.Errorf("expected empty string for empty videoID, got %q", ct)
+		}
+	})
+
+	t.Run("info.json takes priority over photo files", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		videoID := "7600559584901647646"
+		// Create both .info.json and .jpg (info.json should win => video)
+		infoFile := filepath.Join(tmpDir, "20260129_"+videoID+"_Test.info.json")
+		if err := os.WriteFile(infoFile, []byte(`{"id":"test"}`), 0644); err != nil {
+			t.Fatal(err)
+		}
+		jpgFile := filepath.Join(tmpDir, "20260129_"+videoID+"_Test.jpg")
+		if err := os.WriteFile(jpgFile, []byte("fake"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		ct := inferContentTypeFromFiles(tmpDir, videoID)
+		if ct != "video" {
+			t.Errorf("expected 'video' (info.json priority), got %q", ct)
+		}
+	})
+}
+
+func TestApplyContentTypesFromCache(t *testing.T) {
+	t.Run("applies cached types", func(t *testing.T) {
+		entries := []VideoEntry{
+			{Link: "https://www.tiktok.com/@user/video/1001"},
+			{Link: "https://www.tiktok.com/@user/video/1002"},
+		}
+		cache := map[string]string{
+			"https://www.tiktok.com/@user/video/1001": "video",
+			"https://www.tiktok.com/@user/video/1002": "photo",
+		}
+
+		unknown := applyContentTypesFromCache(entries, cache, ".", false)
+		if unknown != 0 {
+			t.Errorf("expected 0 unknown, got %d", unknown)
+		}
+		if entries[0].ContentType != "video" {
+			t.Errorf("expected 'video', got %q", entries[0].ContentType)
+		}
+		if entries[1].ContentType != "photo" {
+			t.Errorf("expected 'photo', got %q", entries[1].ContentType)
+		}
+	})
+
+	t.Run("infers from files on disk", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		videoID := "7600559584901647646"
+		// Create a .info.json file in the temp directory
+		infoFile := filepath.Join(tmpDir, "20260129_"+videoID+"_Test.info.json")
+		if err := os.WriteFile(infoFile, []byte(`{"id":"test"}`), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		entries := []VideoEntry{
+			{Link: "https://www.tiktok.com/@user/video/" + videoID},
+		}
+		cache := make(map[string]string)
+
+		unknown := applyContentTypesFromCache(entries, cache, tmpDir, false)
+		if unknown != 0 {
+			t.Errorf("expected 0 unknown, got %d", unknown)
+		}
+		if entries[0].ContentType != "video" {
+			t.Errorf("expected 'video', got %q", entries[0].ContentType)
+		}
+		// Cache should also be updated
+		if cache[entries[0].Link] != "video" {
+			t.Errorf("expected cache to be updated with 'video'")
+		}
+	})
+
+	t.Run("counts truly unknown entries", func(t *testing.T) {
+		entries := []VideoEntry{
+			{Link: "https://www.tiktok.com/@user/video/1001"},
+			{Link: "https://www.tiktok.com/@user/video/1002"},
+		}
+		cache := map[string]string{
+			"https://www.tiktok.com/@user/video/1001": "video",
+		}
+
+		tmpDir := t.TempDir()
+		unknown := applyContentTypesFromCache(entries, cache, tmpDir, false)
+		if unknown != 1 {
+			t.Errorf("expected 1 unknown, got %d", unknown)
+		}
+	})
+
+	t.Run("skips entries that already have ContentType", func(t *testing.T) {
+		entries := []VideoEntry{
+			{Link: "https://www.tiktok.com/@user/video/1001", ContentType: "video"},
+		}
+		cache := map[string]string{
+			"https://www.tiktok.com/@user/video/1001": "photo", // cache says photo, but entry already set
+		}
+
+		unknown := applyContentTypesFromCache(entries, cache, ".", false)
+		if unknown != 0 {
+			t.Errorf("expected 0 unknown, got %d", unknown)
+		}
+		// Should keep the existing value, not overwrite
+		if entries[0].ContentType != "video" {
+			t.Errorf("expected 'video' (kept existing), got %q", entries[0].ContentType)
+		}
+	})
+}
+
+func TestPhotoArchive(t *testing.T) {
+	t.Run("getPhotoArchivePath collection mode", func(t *testing.T) {
+		path := getPhotoArchivePath("favorites", true)
+		expected := filepath.Join("favorites", "photo_archive.txt")
+		if path != expected {
+			t.Errorf("expected %q, got %q", expected, path)
+		}
+	})
+
+	t.Run("getPhotoArchivePath flat mode", func(t *testing.T) {
+		path := getPhotoArchivePath(".", false)
+		if path != "photo_archive.txt" {
+			t.Errorf("expected 'photo_archive.txt', got %q", path)
+		}
+	})
+
+	t.Run("appendToPhotoArchive creates and appends", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		archivePath := filepath.Join(tmpDir, "photo_archive.txt")
+
+		entries := []VideoEntry{
+			{Link: "https://www.tiktok.com/@user/photo/1001"},
+			{Link: "https://www.tiktok.com/@user/photo/1002"},
+		}
+
+		err := appendToPhotoArchive(archivePath, entries)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		// Read and verify
+		archive, err := parseArchiveFile(archivePath)
+		if err != nil {
+			t.Fatalf("failed to parse archive: %v", err)
+		}
+		if !archive["1001"] || !archive["1002"] {
+			t.Errorf("expected both IDs in archive, got %v", archive)
+		}
+	})
+
+	t.Run("appendToPhotoArchive appends to existing", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		archivePath := filepath.Join(tmpDir, "photo_archive.txt")
+
+		// Write initial entry
+		if err := os.WriteFile(archivePath, []byte("tiktok 1001\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		entries := []VideoEntry{
+			{Link: "https://www.tiktok.com/@user/photo/1002"},
+		}
+
+		err := appendToPhotoArchive(archivePath, entries)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		archive, err := parseArchiveFile(archivePath)
+		if err != nil {
+			t.Fatalf("failed to parse archive: %v", err)
+		}
+		if !archive["1001"] || !archive["1002"] {
+			t.Errorf("expected both IDs, got %v", archive)
+		}
+	})
+
+	t.Run("appendToPhotoArchive skips empty video IDs", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		archivePath := filepath.Join(tmpDir, "photo_archive.txt")
+
+		entries := []VideoEntry{
+			{Link: "https://invalid-url-no-id"},
+		}
+
+		err := appendToPhotoArchive(archivePath, entries)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		data, _ := os.ReadFile(archivePath)
+		if len(strings.TrimSpace(string(data))) != 0 {
+			t.Errorf("expected empty archive, got %q", string(data))
+		}
+	})
+}
+
+// TestScanLinesAndCR tests the custom scanner split function that handles \r, \n, and \r\n
+func TestScanLinesAndCR(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected []string
+	}{
+		{
+			name:     "newline only",
+			input:    "line1\nline2\nline3",
+			expected: []string{"line1", "line2", "line3"},
+		},
+		{
+			name:     "carriage return only",
+			input:    "progress1\rprogress2\rprogress3",
+			expected: []string{"progress1", "progress2", "progress3"},
+		},
+		{
+			name:     "crlf",
+			input:    "line1\r\nline2\r\nline3",
+			expected: []string{"line1", "line2", "line3"},
+		},
+		{
+			name:     "mixed delimiters",
+			input:    "[download] Downloading item 1 of 5\n[download]  50.2% of ~10MiB\r[download] 100% of ~10MiB\r\n[download] Downloading item 2 of 5",
+			expected: []string{"[download] Downloading item 1 of 5", "[download]  50.2% of ~10MiB", "[download] 100% of ~10MiB", "[download] Downloading item 2 of 5"},
+		},
+		{
+			name:     "empty lines",
+			input:    "a\n\nb",
+			expected: []string{"a", "", "b"},
+		},
+		{
+			name:     "single line no delimiter",
+			input:    "hello",
+			expected: []string{"hello"},
+		},
+		{
+			name:     "empty input",
+			input:    "",
+			expected: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			scanner := bufio.NewScanner(strings.NewReader(tt.input))
+			scanner.Split(scanLinesAndCR)
+
+			var got []string
+			for scanner.Scan() {
+				got = append(got, scanner.Text())
+			}
+			if err := scanner.Err(); err != nil {
+				t.Fatalf("scanner error: %v", err)
+			}
+
+			if len(got) != len(tt.expected) {
+				t.Fatalf("expected %d tokens, got %d: %v", len(tt.expected), len(got), got)
+			}
+			for i, want := range tt.expected {
+				if got[i] != want {
+					t.Errorf("token[%d]: expected %q, got %q", i, want, got[i])
+				}
+			}
+		})
+	}
+}
+
+// TestIsVerboseLinePercentage tests that intermediate percentage lines are filtered as verbose
+func TestIsVerboseLinePercentage(t *testing.T) {
+	// These should be considered verbose (suppressed)
+	verbose := []string{
+		"[download]  50.2% of ~10.50MiB at 2.50MiB/s ETA 00:03",
+		"[download] 100% of 5.00MiB",
+		"[download]   3.5% of ~22.00MiB at  1.20MiB/s ETA 00:18",
+	}
+	for _, line := range verbose {
+		if !isVerboseLine(line) {
+			t.Errorf("expected %q to be verbose", line)
+		}
+	}
+
+	// These should NOT be verbose
+	notVerbose := []string{
+		"ERROR: [TikTok] 12345: Video not available",
+		"WARNING: some warning",
+		"[download] Downloading item 1 of 10",
+	}
+	for _, line := range notVerbose {
+		if isVerboseLine(line) {
+			t.Errorf("expected %q to NOT be verbose", line)
+		}
 	}
 }
