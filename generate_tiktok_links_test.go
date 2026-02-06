@@ -10,9 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
@@ -3584,62 +3582,6 @@ func TestProgressRenderer(t *testing.T) {
 }
 
 // TestRenderDetectionProgress tests the detection progress bar rendering
-func TestRenderDetectionProgress(t *testing.T) {
-	t.Run("disabled renderer produces no output", func(t *testing.T) {
-		var buf bytes.Buffer
-		renderer := &ProgressRenderer{enabled: false, writer: &buf}
-
-		renderer.renderDetectionProgress(50, 100, 40, 8, 2)
-
-		if buf.Len() != 0 {
-			t.Errorf("expected no output when disabled, got %q", buf.String())
-		}
-	})
-
-	t.Run("enabled renderer writes expected format", func(t *testing.T) {
-		var buf bytes.Buffer
-		renderer := &ProgressRenderer{enabled: true, writer: &buf}
-
-		renderer.renderDetectionProgress(50, 100, 40, 8, 2)
-
-		output := buf.String()
-		if !strings.Contains(output, "Detecting content types (50/100)") {
-			t.Errorf("expected progress count in output, got %q", output)
-		}
-		if !strings.Contains(output, "50.0%%") {
-			// Check for percentage (note: Sprintf uses %% for literal %)
-			if !strings.Contains(output, "50.0%") {
-				t.Errorf("expected percentage in output, got %q", output)
-			}
-		}
-		if !strings.Contains(output, "Videos: 40") {
-			t.Errorf("expected video count in output, got %q", output)
-		}
-		if !strings.Contains(output, "Photos: 8") {
-			t.Errorf("expected photo count in output, got %q", output)
-		}
-		if !strings.Contains(output, "Errors: 2") {
-			t.Errorf("expected error count in output, got %q", output)
-		}
-	})
-
-	t.Run("progress bar fills correctly at 100%", func(t *testing.T) {
-		var buf bytes.Buffer
-		renderer := &ProgressRenderer{enabled: true, writer: &buf}
-
-		renderer.renderDetectionProgress(100, 100, 90, 10, 0)
-
-		output := buf.String()
-		if !strings.Contains(output, "100.0%") {
-			t.Errorf("expected 100%% in output, got %q", output)
-		}
-		// Should have full bar (20 filled blocks)
-		if !strings.Contains(output, strings.Repeat("█", 20)) {
-			t.Errorf("expected full progress bar, got %q", output)
-		}
-	})
-}
-
 // TestParseArchiveFile tests the parseArchiveFile function with various inputs
 func TestParseArchiveFile(t *testing.T) {
 	tests := []struct {
@@ -4404,182 +4346,6 @@ func TestWriteFavoriteVideosToFileWithPhotos(t *testing.T) {
 }
 
 // TestIsPhotoPost tests the photo post detection function
-func TestIsPhotoPost(t *testing.T) {
-	t.Run("URL already contains /photo/", func(t *testing.T) {
-		// URLs already containing /photo/ should return true immediately without HTTP request
-		photoURL := "https://www.tiktok.com/@user/photo/1234567890"
-		client := &http.Client{} // Won't be used since URL already contains /photo/
-
-		isPhoto, finalURL, err := isPhotoPost(photoURL, client)
-		if err != nil {
-			t.Errorf("unexpected error: %v", err)
-		}
-		if !isPhoto {
-			t.Error("expected isPhoto to be true for URL containing /photo/")
-		}
-		if finalURL != photoURL {
-			t.Errorf("expected finalURL %q, got %q", photoURL, finalURL)
-		}
-	})
-
-	t.Run("video URL redirects to video", func(t *testing.T) {
-		// Create a test server that simulates TikTok's redirect behavior
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Simulate redirect to video URL
-			http.Redirect(w, r, "https://www.tiktok.com/@user/video/1234567890", http.StatusFound)
-		}))
-		defer server.Close()
-
-		client := server.Client()
-
-		isPhoto, finalURL, err := isPhotoPost(server.URL, client)
-		if err != nil {
-			t.Errorf("unexpected error: %v", err)
-		}
-		if isPhoto {
-			t.Error("expected isPhoto to be false for video URL")
-		}
-		if !strings.Contains(finalURL, "/video/") {
-			t.Errorf("expected finalURL to contain /video/, got %q", finalURL)
-		}
-	})
-
-	t.Run("video URL redirects to photo", func(t *testing.T) {
-		// Create a test server that simulates redirect to photo URL
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Simulate redirect to photo URL
-			http.Redirect(w, r, "https://www.tiktok.com/@user/photo/1234567890", http.StatusFound)
-		}))
-		defer server.Close()
-
-		client := server.Client()
-
-		isPhoto, finalURL, err := isPhotoPost(server.URL, client)
-		if err != nil {
-			t.Errorf("unexpected error: %v", err)
-		}
-		if !isPhoto {
-			t.Error("expected isPhoto to be true for redirected photo URL")
-		}
-		if !strings.Contains(finalURL, "/photo/") {
-			t.Errorf("expected finalURL to contain /photo/, got %q", finalURL)
-		}
-	})
-
-	t.Run("URL without redirect", func(t *testing.T) {
-		// Create a test server that doesn't redirect
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusOK)
-		}))
-		defer server.Close()
-
-		client := server.Client()
-
-		isPhoto, _, err := isPhotoPost(server.URL, client)
-		if err != nil {
-			t.Errorf("unexpected error: %v", err)
-		}
-		if isPhoto {
-			t.Error("expected isPhoto to be false for non-photo URL without redirect")
-		}
-	})
-
-	t.Run("network error", func(t *testing.T) {
-		client := &http.Client{
-			Transport: &errorTransport{err: fmt.Errorf("network unreachable")},
-		}
-
-		_, _, err := isPhotoPost("https://www.tiktok.com/@user/video/123", client)
-		if err == nil {
-			t.Error("expected error for network failure, got nil")
-		}
-	})
-
-	t.Run("invalid URL", func(t *testing.T) {
-		client := &http.Client{}
-
-		_, _, err := isPhotoPost("://invalid-url", client)
-		if err == nil {
-			t.Error("expected error for invalid URL, got nil")
-		}
-	})
-
-	t.Run("multiple redirects to photo", func(t *testing.T) {
-		// Server that does multiple redirects before landing on a photo URL
-		redirectCount := 0
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			redirectCount++
-			if redirectCount < 3 {
-				http.Redirect(w, r, r.URL.String(), http.StatusFound)
-			} else {
-				http.Redirect(w, r, "https://www.tiktok.com/@user/photo/123", http.StatusFound)
-			}
-		}))
-		defer server.Close()
-
-		client := server.Client()
-
-		isPhoto, finalURL, err := isPhotoPost(server.URL, client)
-		if err != nil {
-			t.Errorf("unexpected error: %v", err)
-		}
-		if !isPhoto {
-			t.Error("expected isPhoto to be true after multiple redirects")
-		}
-		if !strings.Contains(finalURL, "/photo/") {
-			t.Errorf("expected finalURL to contain /photo/, got %q", finalURL)
-		}
-	})
-
-	t.Run("concurrent calls are race-free", func(t *testing.T) {
-		// Verify that isPhotoPost can be called concurrently on the same
-		// *http.Client without data races (requires -race flag to verify).
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Alternate between photo and video redirects based on a query param
-			if r.URL.Query().Get("type") == "photo" {
-				http.Redirect(w, r, "https://www.tiktok.com/@user/photo/"+r.URL.Query().Get("id"), http.StatusFound)
-			} else {
-				http.Redirect(w, r, "https://www.tiktok.com/@user/video/"+r.URL.Query().Get("id"), http.StatusFound)
-			}
-		}))
-		defer server.Close()
-
-		client := server.Client()
-
-		const goroutines = 50
-		var wg sync.WaitGroup
-		wg.Add(goroutines)
-		errs := make(chan error, goroutines)
-
-		for i := 0; i < goroutines; i++ {
-			go func(idx int) {
-				defer wg.Done()
-				urlType := "video"
-				if idx%2 == 0 {
-					urlType = "photo"
-				}
-				url := server.URL + "?type=" + urlType + "&id=" + strconv.Itoa(idx)
-				isPhoto, _, err := isPhotoPost(url, client)
-				if err != nil {
-					errs <- fmt.Errorf("goroutine %d: unexpected error: %v", idx, err)
-					return
-				}
-				if urlType == "photo" && !isPhoto {
-					errs <- fmt.Errorf("goroutine %d: expected photo, got video", idx)
-				} else if urlType == "video" && isPhoto {
-					errs <- fmt.Errorf("goroutine %d: expected video, got photo", idx)
-				}
-			}(i)
-		}
-
-		wg.Wait()
-		close(errs)
-		for err := range errs {
-			t.Error(err)
-		}
-	})
-}
-
 // TestGetOrDownloadGalleryDl tests the gallery-dl download function
 func TestGetOrDownloadGalleryDl(t *testing.T) {
 	t.Run("file already exists", func(t *testing.T) {
@@ -5042,135 +4808,6 @@ func TestBackupGalleryDl(t *testing.T) {
 }
 
 // TestDetectContentTypes tests batch content type detection
-func TestDetectContentTypes(t *testing.T) {
-	t.Run("empty entries", func(t *testing.T) {
-		entries := []VideoEntry{}
-		client := &http.Client{}
-		cache := make(map[string]string)
-
-		result := detectContentTypes(entries, client, cache, true)
-		if len(result) != 0 {
-			t.Errorf("expected empty map, got %d entries", len(result))
-		}
-	})
-
-	t.Run("photo URL in path detected without network", func(t *testing.T) {
-		// isPhotoPost returns true immediately for URLs containing /photo/ —
-		// no HTTP request needed. Only /photo/ URLs get the early return;
-		// /video/ URLs still require a network call to follow redirects.
-		entries := []VideoEntry{
-			{Link: "https://www.tiktok.com/@user/photo/123"},
-		}
-		client := &http.Client{
-			Transport: &errorTransport{err: fmt.Errorf("should not be called")},
-		}
-		cache := make(map[string]string)
-
-		result := detectContentTypes(entries, client, cache, true)
-
-		if len(result) != 1 {
-			t.Errorf("expected 1 entry, got %d", len(result))
-		}
-		if result["https://www.tiktok.com/@user/photo/123"] != "photo" {
-			t.Errorf("expected 'photo', got %q", result["https://www.tiktok.com/@user/photo/123"])
-		}
-	})
-
-	t.Run("cached entries skip network requests", func(t *testing.T) {
-		entries := []VideoEntry{
-			{Link: "https://www.tiktokv.com/share/video/111"},
-			{Link: "https://www.tiktokv.com/share/video/222"},
-		}
-
-		// Client that fails on any request - should NOT be called since all entries are cached
-		client := &http.Client{
-			Transport: &errorTransport{err: fmt.Errorf("should not be called for cached URLs")},
-		}
-
-		cache := map[string]string{
-			"https://www.tiktokv.com/share/video/111": "video",
-			"https://www.tiktokv.com/share/video/222": "photo",
-		}
-
-		result := detectContentTypes(entries, client, cache, true)
-
-		if result["https://www.tiktokv.com/share/video/111"] != "video" {
-			t.Errorf("expected 'video', got %q", result["https://www.tiktokv.com/share/video/111"])
-		}
-		if result["https://www.tiktokv.com/share/video/222"] != "photo" {
-			t.Errorf("expected 'photo', got %q", result["https://www.tiktokv.com/share/video/222"])
-		}
-	})
-
-	t.Run("redirect-based detection through worker pool", func(t *testing.T) {
-		// Integration test: exercises the full worker pool with actual HTTP redirects.
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			switch r.URL.Path {
-			case "/short/1":
-				http.Redirect(w, r, "https://www.tiktok.com/@user/photo/1001", http.StatusFound)
-			case "/short/2":
-				http.Redirect(w, r, "https://www.tiktok.com/@user/video/1002", http.StatusFound)
-			case "/short/3":
-				http.Redirect(w, r, "https://www.tiktok.com/@user/photo/1003", http.StatusFound)
-			default:
-				w.WriteHeader(http.StatusNotFound)
-			}
-		}))
-		defer server.Close()
-
-		entries := []VideoEntry{
-			{Link: server.URL + "/short/1"},
-			{Link: server.URL + "/short/2"},
-			{Link: server.URL + "/short/3"},
-		}
-		client := server.Client()
-		cache := make(map[string]string)
-
-		result := detectContentTypes(entries, client, cache, true)
-
-		if len(result) != 3 {
-			t.Fatalf("expected 3 entries, got %d", len(result))
-		}
-		if result[entries[0].Link] != "photo" {
-			t.Errorf("entry 0: expected 'photo', got %q", result[entries[0].Link])
-		}
-		if result[entries[1].Link] != "video" {
-			t.Errorf("entry 1: expected 'video', got %q", result[entries[1].Link])
-		}
-		if result[entries[2].Link] != "photo" {
-			t.Errorf("entry 2: expected 'photo', got %q", result[entries[2].Link])
-		}
-	})
-
-	t.Run("mix of cached and uncached entries", func(t *testing.T) {
-		entries := []VideoEntry{
-			{Link: "https://www.tiktokv.com/share/video/111"},
-			{Link: "https://www.tiktok.com/@user/photo/222"},
-		}
-
-		// Client that fails - the uncached URL contains /photo/ so no network needed
-		client := &http.Client{
-			Transport: &errorTransport{err: fmt.Errorf("should not be called")},
-		}
-
-		cache := map[string]string{
-			"https://www.tiktokv.com/share/video/111": "video",
-		}
-
-		result := detectContentTypes(entries, client, cache, true)
-
-		if len(result) != 2 {
-			t.Errorf("expected 2 entries, got %d", len(result))
-		}
-		if result["https://www.tiktokv.com/share/video/111"] != "video" {
-			t.Errorf("expected cached 'video', got %q", result["https://www.tiktokv.com/share/video/111"])
-		}
-		if result["https://www.tiktok.com/@user/photo/222"] != "photo" {
-			t.Errorf("expected detected 'photo', got %q", result["https://www.tiktok.com/@user/photo/222"])
-		}
-	})
-}
-
 func TestContentTypeCache(t *testing.T) {
 	t.Run("load and save round-trip", func(t *testing.T) {
 		tmpDir := t.TempDir()
@@ -5280,6 +4917,368 @@ func TestContentTypeCache(t *testing.T) {
 		}
 		if cache.Types["https://example.com/1"] != "video" {
 			t.Errorf("expected 'video', got %q", cache.Types["https://example.com/1"])
+		}
+	})
+}
+
+func TestIdentifyFailedEntries(t *testing.T) {
+	t.Run("all succeeded", func(t *testing.T) {
+		entries := []VideoEntry{
+			{Link: "https://www.tiktok.com/@user/video/1001"},
+			{Link: "https://www.tiktok.com/@user/video/1002"},
+		}
+		before := map[string]bool{}
+		after := map[string]bool{"1001": true, "1002": true}
+
+		succeeded, alreadyDownloaded, failed := identifyFailedEntries(entries, before, after)
+		if len(succeeded) != 2 {
+			t.Errorf("expected 2 succeeded, got %d", len(succeeded))
+		}
+		if len(alreadyDownloaded) != 0 {
+			t.Errorf("expected 0 already downloaded, got %d", len(alreadyDownloaded))
+		}
+		if len(failed) != 0 {
+			t.Errorf("expected 0 failed, got %d", len(failed))
+		}
+	})
+
+	t.Run("all already downloaded", func(t *testing.T) {
+		entries := []VideoEntry{
+			{Link: "https://www.tiktok.com/@user/video/1001"},
+			{Link: "https://www.tiktok.com/@user/video/1002"},
+		}
+		before := map[string]bool{"1001": true, "1002": true}
+		after := map[string]bool{"1001": true, "1002": true}
+
+		succeeded, alreadyDownloaded, failed := identifyFailedEntries(entries, before, after)
+		if len(succeeded) != 0 {
+			t.Errorf("expected 0 succeeded, got %d", len(succeeded))
+		}
+		if len(alreadyDownloaded) != 2 {
+			t.Errorf("expected 2 already downloaded, got %d", len(alreadyDownloaded))
+		}
+		if len(failed) != 0 {
+			t.Errorf("expected 0 failed, got %d", len(failed))
+		}
+	})
+
+	t.Run("all failed", func(t *testing.T) {
+		entries := []VideoEntry{
+			{Link: "https://www.tiktok.com/@user/video/1001"},
+			{Link: "https://www.tiktok.com/@user/video/1002"},
+		}
+		before := map[string]bool{}
+		after := map[string]bool{}
+
+		succeeded, alreadyDownloaded, failed := identifyFailedEntries(entries, before, after)
+		if len(succeeded) != 0 {
+			t.Errorf("expected 0 succeeded, got %d", len(succeeded))
+		}
+		if len(alreadyDownloaded) != 0 {
+			t.Errorf("expected 0 already downloaded, got %d", len(alreadyDownloaded))
+		}
+		if len(failed) != 2 {
+			t.Errorf("expected 2 failed, got %d", len(failed))
+		}
+	})
+
+	t.Run("mixed results", func(t *testing.T) {
+		entries := []VideoEntry{
+			{Link: "https://www.tiktok.com/@user/video/1001"}, // will succeed
+			{Link: "https://www.tiktok.com/@user/video/1002"}, // already downloaded
+			{Link: "https://www.tiktok.com/@user/video/1003"}, // will fail
+		}
+		before := map[string]bool{"1002": true}
+		after := map[string]bool{"1001": true, "1002": true}
+
+		succeeded, alreadyDownloaded, failed := identifyFailedEntries(entries, before, after)
+		if len(succeeded) != 1 || extractVideoID(succeeded[0].Link) != "1001" {
+			t.Errorf("expected succeeded=[1001], got %v", succeeded)
+		}
+		if len(alreadyDownloaded) != 1 || extractVideoID(alreadyDownloaded[0].Link) != "1002" {
+			t.Errorf("expected alreadyDownloaded=[1002], got %v", alreadyDownloaded)
+		}
+		if len(failed) != 1 || extractVideoID(failed[0].Link) != "1003" {
+			t.Errorf("expected failed=[1003], got %v", failed)
+		}
+	})
+
+	t.Run("unparseable URL goes to failed", func(t *testing.T) {
+		entries := []VideoEntry{
+			{Link: "https://invalid-url-no-id"},
+		}
+		before := map[string]bool{}
+		after := map[string]bool{}
+
+		_, _, failed := identifyFailedEntries(entries, before, after)
+		if len(failed) != 1 {
+			t.Errorf("expected 1 failed for unparseable URL, got %d", len(failed))
+		}
+	})
+}
+
+func TestInferContentTypeFromFiles(t *testing.T) {
+	t.Run("detects video from info.json", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		videoID := "7600559584901647646"
+		// Create a .info.json file
+		infoFile := filepath.Join(tmpDir, "20260129_"+videoID+"_Test.info.json")
+		if err := os.WriteFile(infoFile, []byte(`{"id":"7600559584901647646"}`), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		ct := inferContentTypeFromFiles(tmpDir, videoID)
+		if ct != "video" {
+			t.Errorf("expected 'video', got %q", ct)
+		}
+	})
+
+	t.Run("detects video from mp4 file", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		videoID := "7600559584901647646"
+		mp4File := filepath.Join(tmpDir, "20260129_"+videoID+"_Test.mp4")
+		if err := os.WriteFile(mp4File, []byte("fake video"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		ct := inferContentTypeFromFiles(tmpDir, videoID)
+		if ct != "video" {
+			t.Errorf("expected 'video', got %q", ct)
+		}
+	})
+
+	t.Run("detects photo from jpg file", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		videoID := "7597601281703693623"
+		jpgFile := filepath.Join(tmpDir, "20260129_"+videoID+"_Slideshow_1.jpg")
+		if err := os.WriteFile(jpgFile, []byte("fake image"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		ct := inferContentTypeFromFiles(tmpDir, videoID)
+		if ct != "photo" {
+			t.Errorf("expected 'photo', got %q", ct)
+		}
+	})
+
+	t.Run("detects photo from gallery-dl json", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		videoID := "7597601281703693623"
+		jsonFile := filepath.Join(tmpDir, "20260129_"+videoID+"_Slideshow.json")
+		if err := os.WriteFile(jsonFile, []byte(`{"id":"7597601281703693623"}`), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		ct := inferContentTypeFromFiles(tmpDir, videoID)
+		if ct != "photo" {
+			t.Errorf("expected 'photo', got %q", ct)
+		}
+	})
+
+	t.Run("returns empty for no files", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		ct := inferContentTypeFromFiles(tmpDir, "9999999999999999999")
+		if ct != "" {
+			t.Errorf("expected empty string, got %q", ct)
+		}
+	})
+
+	t.Run("returns empty for empty video ID", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		ct := inferContentTypeFromFiles(tmpDir, "")
+		if ct != "" {
+			t.Errorf("expected empty string for empty videoID, got %q", ct)
+		}
+	})
+
+	t.Run("info.json takes priority over photo files", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		videoID := "7600559584901647646"
+		// Create both .info.json and .jpg (info.json should win => video)
+		infoFile := filepath.Join(tmpDir, "20260129_"+videoID+"_Test.info.json")
+		if err := os.WriteFile(infoFile, []byte(`{"id":"test"}`), 0644); err != nil {
+			t.Fatal(err)
+		}
+		jpgFile := filepath.Join(tmpDir, "20260129_"+videoID+"_Test.jpg")
+		if err := os.WriteFile(jpgFile, []byte("fake"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		ct := inferContentTypeFromFiles(tmpDir, videoID)
+		if ct != "video" {
+			t.Errorf("expected 'video' (info.json priority), got %q", ct)
+		}
+	})
+}
+
+func TestApplyContentTypesFromCache(t *testing.T) {
+	t.Run("applies cached types", func(t *testing.T) {
+		entries := []VideoEntry{
+			{Link: "https://www.tiktok.com/@user/video/1001"},
+			{Link: "https://www.tiktok.com/@user/video/1002"},
+		}
+		cache := map[string]string{
+			"https://www.tiktok.com/@user/video/1001": "video",
+			"https://www.tiktok.com/@user/video/1002": "photo",
+		}
+
+		unknown := applyContentTypesFromCache(entries, cache, ".", false)
+		if unknown != 0 {
+			t.Errorf("expected 0 unknown, got %d", unknown)
+		}
+		if entries[0].ContentType != "video" {
+			t.Errorf("expected 'video', got %q", entries[0].ContentType)
+		}
+		if entries[1].ContentType != "photo" {
+			t.Errorf("expected 'photo', got %q", entries[1].ContentType)
+		}
+	})
+
+	t.Run("infers from files on disk", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		videoID := "7600559584901647646"
+		// Create a .info.json file in the temp directory
+		infoFile := filepath.Join(tmpDir, "20260129_"+videoID+"_Test.info.json")
+		if err := os.WriteFile(infoFile, []byte(`{"id":"test"}`), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		entries := []VideoEntry{
+			{Link: "https://www.tiktok.com/@user/video/" + videoID},
+		}
+		cache := make(map[string]string)
+
+		unknown := applyContentTypesFromCache(entries, cache, tmpDir, false)
+		if unknown != 0 {
+			t.Errorf("expected 0 unknown, got %d", unknown)
+		}
+		if entries[0].ContentType != "video" {
+			t.Errorf("expected 'video', got %q", entries[0].ContentType)
+		}
+		// Cache should also be updated
+		if cache[entries[0].Link] != "video" {
+			t.Errorf("expected cache to be updated with 'video'")
+		}
+	})
+
+	t.Run("counts truly unknown entries", func(t *testing.T) {
+		entries := []VideoEntry{
+			{Link: "https://www.tiktok.com/@user/video/1001"},
+			{Link: "https://www.tiktok.com/@user/video/1002"},
+		}
+		cache := map[string]string{
+			"https://www.tiktok.com/@user/video/1001": "video",
+		}
+
+		tmpDir := t.TempDir()
+		unknown := applyContentTypesFromCache(entries, cache, tmpDir, false)
+		if unknown != 1 {
+			t.Errorf("expected 1 unknown, got %d", unknown)
+		}
+	})
+
+	t.Run("skips entries that already have ContentType", func(t *testing.T) {
+		entries := []VideoEntry{
+			{Link: "https://www.tiktok.com/@user/video/1001", ContentType: "video"},
+		}
+		cache := map[string]string{
+			"https://www.tiktok.com/@user/video/1001": "photo", // cache says photo, but entry already set
+		}
+
+		unknown := applyContentTypesFromCache(entries, cache, ".", false)
+		if unknown != 0 {
+			t.Errorf("expected 0 unknown, got %d", unknown)
+		}
+		// Should keep the existing value, not overwrite
+		if entries[0].ContentType != "video" {
+			t.Errorf("expected 'video' (kept existing), got %q", entries[0].ContentType)
+		}
+	})
+}
+
+func TestPhotoArchive(t *testing.T) {
+	t.Run("getPhotoArchivePath collection mode", func(t *testing.T) {
+		path := getPhotoArchivePath("favorites", true)
+		expected := filepath.Join("favorites", "photo_archive.txt")
+		if path != expected {
+			t.Errorf("expected %q, got %q", expected, path)
+		}
+	})
+
+	t.Run("getPhotoArchivePath flat mode", func(t *testing.T) {
+		path := getPhotoArchivePath(".", false)
+		if path != "photo_archive.txt" {
+			t.Errorf("expected 'photo_archive.txt', got %q", path)
+		}
+	})
+
+	t.Run("appendToPhotoArchive creates and appends", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		archivePath := filepath.Join(tmpDir, "photo_archive.txt")
+
+		entries := []VideoEntry{
+			{Link: "https://www.tiktok.com/@user/photo/1001"},
+			{Link: "https://www.tiktok.com/@user/photo/1002"},
+		}
+
+		err := appendToPhotoArchive(archivePath, entries)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		// Read and verify
+		archive, err := parseArchiveFile(archivePath)
+		if err != nil {
+			t.Fatalf("failed to parse archive: %v", err)
+		}
+		if !archive["1001"] || !archive["1002"] {
+			t.Errorf("expected both IDs in archive, got %v", archive)
+		}
+	})
+
+	t.Run("appendToPhotoArchive appends to existing", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		archivePath := filepath.Join(tmpDir, "photo_archive.txt")
+
+		// Write initial entry
+		if err := os.WriteFile(archivePath, []byte("tiktok 1001\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		entries := []VideoEntry{
+			{Link: "https://www.tiktok.com/@user/photo/1002"},
+		}
+
+		err := appendToPhotoArchive(archivePath, entries)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		archive, err := parseArchiveFile(archivePath)
+		if err != nil {
+			t.Fatalf("failed to parse archive: %v", err)
+		}
+		if !archive["1001"] || !archive["1002"] {
+			t.Errorf("expected both IDs, got %v", archive)
+		}
+	})
+
+	t.Run("appendToPhotoArchive skips empty video IDs", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		archivePath := filepath.Join(tmpDir, "photo_archive.txt")
+
+		entries := []VideoEntry{
+			{Link: "https://invalid-url-no-id"},
+		}
+
+		err := appendToPhotoArchive(archivePath, entries)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		data, _ := os.ReadFile(archivePath)
+		if len(strings.TrimSpace(string(data))) != 0 {
+			t.Errorf("expected empty archive, got %q", string(data))
 		}
 	})
 }

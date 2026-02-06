@@ -2,20 +2,25 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Photo/Slideshow Support (New!)
+## Photo/Slideshow Support
 
-TikTok photo slideshows (carousels) are now supported alongside videos. The application automatically:
+TikTok photo slideshows (carousels) are supported alongside videos. The application automatically:
 
-1. **Detects photo posts** by checking URL redirects (photo URLs contain `/photo/` instead of `/video/`)
-2. **Downloads photos using gallery-dl** (auto-downloaded like yt-dlp if not present)
-3. **Downloads videos using yt-dlp** (existing behavior)
+1. **Sends all URLs to yt-dlp first** (videos succeed, photos fail gracefully)
+2. **Falls back to gallery-dl** for URLs that yt-dlp couldn't handle
+3. **Caches results** so subsequent runs route directly without retrying
 4. **Generates unified indexes** that display both videos and photos
 
-### How Photo Detection Works
-- On startup, the app checks each URL from your TikTok export
-- URLs that redirect to `/photo/` paths are marked as photo posts
-- Photo URLs are routed to gallery-dl instead of yt-dlp
-- Detection adds a small delay (~100ms per URL) to avoid rate limiting
+### How Content Type Detection Works (yt-dlp First, gallery-dl Fallback)
+Instead of pre-detecting content types via HTTP requests (which TikTok rate-limits aggressively), the application uses a try-then-fallback approach:
+
+1. **Load cache**: `content_types_cache.json` stores known URL → type mappings from previous runs
+2. **Infer from files**: For uncached URLs, check what files exist on disk (`.info.json` = video, `.jpg`/`.png` = photo)
+3. **yt-dlp pass**: Send known-video + unknown entries to yt-dlp. Diff the download archive before/after to identify failures.
+4. **gallery-dl fallback**: Send known-photo entries + yt-dlp failures to gallery-dl
+5. **Update cache**: Save newly discovered content types for future runs
+
+This eliminates the slow pre-detection phase (which could take 2+ days for large collections due to TikTok rate limiting) and replaces it with a ~1 hour download cycle.
 
 ### What Gets Downloaded
 - **Videos**: MP4 files + thumbnails + metadata (via yt-dlp)
@@ -25,14 +30,14 @@ TikTok photo slideshows (carousels) are now supported alongside videos. The appl
 - Automatically downloaded from GitHub if not present
 - Version checked against latest release (same as yt-dlp)
 - Update prompts shown when newer version available
+- Photo archive (`photo_archive.txt`) tracks downloaded photos for skip optimization
 
-### Separate URL Files
-When photo posts are detected:
-- `fav_videos.txt` / `liked_videos.txt` - Video URLs for yt-dlp
-- `fav_photos.txt` / `liked_photos.txt` - Photo URLs for gallery-dl
+### URL Files
+- `fav_videos.txt` / `liked_videos.txt` - All URLs (videos + unknowns) for yt-dlp
+- `fav_photos.txt` / `liked_photos.txt` - Known photo URLs for gallery-dl
 
 ### Progress Reporting with Photos
-Session summaries now show separate stats:
+Session summaries show separate stats:
 ```
 Videos Attempted: 92
   ✓ Successfully Downloaded: 87
@@ -45,9 +50,9 @@ Photos Attempted: 15
 ```
 
 ### Limitations
-- Photo detection requires network requests (adds startup time)
 - gallery-dl is a separate ~10MB download
 - Photo metadata format differs slightly from video metadata
+- First run sends all unknown URLs through yt-dlp before gallery-dl (slightly slower if most URLs are photos)
 
 ---
 
@@ -209,11 +214,13 @@ project-folder/
 ├── yt-dlp.exe                                       # Auto-downloaded for video downloads
 ├── gallery-dl.exe                                   # Auto-downloaded for photo downloads
 ├── user_data_tiktok.json
+├── content_types_cache.json                         # Cached URL → content type mappings
 │
 ├── favorites/                                        # Favorited content collection
 │   ├── fav_videos.txt                               # Video URL list (yt-dlp)
 │   ├── fav_photos.txt                               # Photo URL list (gallery-dl)
 │   ├── download_archive.txt                         # Resume tracking (skips downloaded videos)
+│   ├── photo_archive.txt                            # Resume tracking (skips downloaded photos)
 │   ├── index.json                                   # Machine-readable metadata index
 │   ├── index.html                                   # Visual browser (open in Chrome)
 │   │
@@ -233,6 +240,7 @@ project-folder/
     ├── liked_videos.txt                             # Note: different filename for liked
     ├── liked_photos.txt                             # Photo URLs for liked collection
     ├── download_archive.txt                         # Resume tracking for liked videos
+    ├── photo_archive.txt                            # Resume tracking for liked photos
     ├── index.json
     ├── index.html
     └── ...
@@ -427,10 +435,12 @@ This is a single-package Go application (`package main`) that downloads TikTok f
    - `parseFavoriteVideosFromFile()` extracts video entries with collection metadata
    - `VideoEntry` struct contains Link, Date, Collection, ContentType, and extended metadata fields
 
-2. **Content Type Detection**: Detects whether URLs are videos or photos
-   - `isPhotoPost()` follows URL redirects to detect `/photo/` vs `/video/` URLs
-   - `detectContentTypes()` batch-processes all URLs with rate limiting (100ms delay)
+2. **Content Type Resolution**: Determines whether URLs are videos or photos without network requests
+   - `applyContentTypesFromCache()` loads types from cache file and infers from files on disk
+   - `inferContentTypeFromFiles()` checks for `.info.json` (video) or image files (photo) on disk
+   - `identifyFailedEntries()` diffs download archive before/after yt-dlp to find failures
    - `separateEntriesByContentType()` splits entries into video and photo lists
+   - Content type cache (`content_types_cache.json`) persists results across runs
 
 3. **Collection Organization**: Organizes content by collection type (enabled by default)
    - `sanitizeCollectionName()` ensures collection names are valid directory names
@@ -465,6 +475,9 @@ This is a single-package Go application (`package main`) that downloads TikTok f
      - `--write-metadata` - Save metadata JSON for each photo
    - Supports same cookie flags as yt-dlp
    - `parseGalleryDlOutput()` parses gallery-dl output for success/failure counting
+   - Photo archive (`photo_archive.txt`) tracks downloaded photos for skip optimization
+   - `appendToPhotoArchive()` writes successfully downloaded photo IDs after gallery-dl run
+   - `getPhotoArchivePath()` returns archive path based on collection organization mode
 
 4. **Real-Time Progress Bar**: Live download progress visualization
    - `ProgressState` struct tracks current download progress (current index, total, success/failure counts)
