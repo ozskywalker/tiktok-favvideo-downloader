@@ -442,6 +442,7 @@ func updateYtdlp(exePath string) error {
 	}
 	return nil
 }
+
 // promptForUpdate asks the user if they want to update yt-dlp.exe
 // Returns true if user wants to update (default is yes)
 func promptForUpdate() bool {
@@ -1072,6 +1073,7 @@ func processOutput(stdout, stderr io.Reader, stdoutWriter, stderrWriter io.Write
 	// Process stdout
 	go func() {
 		scanner := bufio.NewScanner(stdout)
+		scanner.Split(scanLinesAndCR)
 		for scanner.Scan() {
 			line := scanner.Text()
 
@@ -1122,12 +1124,16 @@ func processOutput(stdout, stderr io.Reader, stdoutWriter, stderrWriter io.Write
 				renderer.renderProgress(state)
 			}
 		}
+		if err := scanner.Err(); err != nil {
+			_, _ = fmt.Fprintf(stderrWriter, "[!] stdout scanner error: %v\n", err)
+		}
 		done <- true
 	}()
 
 	// Process stderr
 	go func() {
 		scanner := bufio.NewScanner(stderr)
+		scanner.Split(scanLinesAndCR)
 		for scanner.Scan() {
 			line := scanner.Text()
 
@@ -1148,6 +1154,9 @@ func processOutput(stdout, stderr io.Reader, stdoutWriter, stderrWriter io.Write
 			if renderer != nil && renderer.enabled {
 				renderer.renderProgress(state)
 			}
+		}
+		if err := scanner.Err(); err != nil {
+			_, _ = fmt.Fprintf(stderrWriter, "[!] stderr scanner error: %v\n", err)
 		}
 		done <- true
 	}()
@@ -1277,6 +1286,7 @@ func isVerboseLine(line string) bool {
 		"Video thumbnail is already present",
 		"Video metadata is already present",
 		"[download] 100%",
+		"% of ",
 	}
 
 	for _, pattern := range verbosePatterns {
@@ -1292,6 +1302,41 @@ func isVerboseLine(line string) bool {
 // Returns: true if this is an error message
 func isErrorLine(line string) bool {
 	return strings.Contains(line, "ERROR: [TikTok]")
+}
+
+// scanLinesAndCR is a bufio.SplitFunc that splits on \n, \r\n, or bare \r.
+// yt-dlp uses bare \r for in-place percentage updates (e.g., "[download]  50.2% of ~10MiB").
+// The default bufio.ScanLines only splits on \n, so bare \r lines accumulate into a single
+// token that can exceed the 64KB scanner buffer, silently killing the scanner.
+func scanLinesAndCR(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	if atEOF && len(data) == 0 {
+		return 0, nil, nil
+	}
+	// Find the earliest \r or \n
+	for i := 0; i < len(data); i++ {
+		if data[i] == '\n' {
+			return i + 1, data[:i], nil
+		}
+		if data[i] == '\r' {
+			// Check for \r\n
+			if i+1 < len(data) {
+				if data[i+1] == '\n' {
+					return i + 2, data[:i], nil
+				}
+				return i + 1, data[:i], nil
+			}
+			// \r at end of buffer - if at EOF, return it; otherwise request more data
+			if atEOF {
+				return len(data), data[:i], nil
+			}
+			return 0, nil, nil // need more data to check for \r\n
+		}
+	}
+	// No delimiter found
+	if atEOF {
+		return len(data), data, nil
+	}
+	return 0, nil, nil // request more data
 }
 
 // supportsANSI checks if the terminal supports ANSI escape codes
@@ -1718,6 +1763,8 @@ func runYtdlpWithRunner(runner CommandRunner, psPrefix, outputName string, confi
 		"-a", targetFile,
 		"--output", outputFormat,
 		"--write-info-json", // Save metadata JSON for each video
+		"--add-headers",
+		"User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7671.0 Safari/537.36", // set user-agent for chrome not yt-dlp's default
 	}
 
 	// Add thumbnail download unless skipped
@@ -1820,6 +1867,7 @@ func parseGalleryDlOutput(lines []string, entries []VideoEntry) (success int, fa
 			if matches := galleryVideoIDPattern.FindStringSubmatch(line); len(matches) > 1 {
 				videoID := matches[1]
 				if !seenIDs[videoID] {
+					seenIDs[videoID] = true
 					failures = append(failures, FailureDetail{
 						VideoID:      videoID,
 						VideoURL:     idToURL[videoID],
@@ -1969,10 +2017,10 @@ func runGalleryDl(psPrefix, outputDir string, config *Config, entries []VideoEnt
 
 	// Parse output
 	combined := combineOutputLines(stdoutBuf.String(), stderrBuf.String())
-	successCount, failures := parseGalleryDlOutput(combined, photosToDownload)
+	_, failures := parseGalleryDlOutput(combined, photosToDownload)
 
 	// Append succeeded entries to photo archive (for future skip optimization)
-	if !config.DisableResume && successCount > 0 {
+	if !config.DisableResume && len(photosToDownload) > len(failures) {
 		// Identify succeeded entries by checking which video IDs now have files on disk
 		var succeededEntries []VideoEntry
 		for _, entry := range photosToDownload {
@@ -1997,7 +2045,7 @@ func runGalleryDl(psPrefix, outputDir string, config *Config, entries []VideoEnt
 		Name:           collectionName,
 		Attempted:      len(entries),
 		Failed:         len(failures),
-		Success:        successCount + skippedCount,
+		Success:        len(entries) - len(failures),
 		Skipped:        skippedCount,
 		FailureDetails: failures,
 	}
@@ -2014,7 +2062,7 @@ func runGalleryDl(psPrefix, outputDir string, config *Config, entries []VideoEnt
 		fmt.Printf("[!] Photo download completed with %d failures out of %d photos.\n",
 			result.Failed, len(photosToDownload))
 	} else {
-		fmt.Printf("[*] Successfully downloaded all %d photos.\n", successCount)
+		fmt.Printf("[*] Successfully downloaded all %d photos.\n", result.Success-result.Skipped)
 	}
 
 	return result, err

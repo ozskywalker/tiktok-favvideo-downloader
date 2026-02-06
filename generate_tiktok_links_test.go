@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"flag"
@@ -325,7 +326,7 @@ func TestRunYtdlpWithRunner(t *testing.T) {
 			config:     &Config{DisableResume: true},
 			shouldFail: false,
 			expectCmd:  "yt-dlp.exe",
-			expectArgs: []string{"-a", "test_videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json", "--write-thumbnail", "--convert-thumbnails", "jpg"},
+			expectArgs: []string{"-a", "test_videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json", "--add-headers", "User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7671.0 Safari/537.36", "--write-thumbnail", "--convert-thumbnails", "jpg"},
 		},
 		{
 			name:       "successful execution with powershell prefix",
@@ -334,7 +335,7 @@ func TestRunYtdlpWithRunner(t *testing.T) {
 			config:     &Config{DisableResume: true},
 			shouldFail: false,
 			expectCmd:  ".\\yt-dlp.exe",
-			expectArgs: []string{"-a", "fav_videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json", "--write-thumbnail", "--convert-thumbnails", "jpg"},
+			expectArgs: []string{"-a", "fav_videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json", "--add-headers", "User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7671.0 Safari/537.36", "--write-thumbnail", "--convert-thumbnails", "jpg"},
 		},
 		{
 			name:       "command execution failure",
@@ -343,7 +344,7 @@ func TestRunYtdlpWithRunner(t *testing.T) {
 			config:     &Config{DisableResume: true},
 			shouldFail: true,
 			expectCmd:  "yt-dlp.exe",
-			expectArgs: []string{"-a", "videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json", "--write-thumbnail", "--convert-thumbnails", "jpg"},
+			expectArgs: []string{"-a", "videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json", "--add-headers", "User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7671.0 Safari/537.36", "--write-thumbnail", "--convert-thumbnails", "jpg"},
 		},
 		{
 			name:       "collection organized output goes to subdirectory",
@@ -352,7 +353,7 @@ func TestRunYtdlpWithRunner(t *testing.T) {
 			config:     &Config{OrganizeByCollection: true, DisableResume: true},
 			shouldFail: false,
 			expectCmd:  "yt-dlp.exe",
-			expectArgs: []string{"-a", filepath.Join("favorites", "fav_videos.txt"), "--output", filepath.Join("favorites", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s"), "--write-info-json", "--write-thumbnail", "--convert-thumbnails", "jpg"},
+			expectArgs: []string{"-a", filepath.Join("favorites", "fav_videos.txt"), "--output", filepath.Join("favorites", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s"), "--write-info-json", "--add-headers", "User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7671.0 Safari/537.36", "--write-thumbnail", "--convert-thumbnails", "jpg"},
 		},
 		{
 			name:       "skip thumbnails omits --write-thumbnail flag",
@@ -361,7 +362,7 @@ func TestRunYtdlpWithRunner(t *testing.T) {
 			config:     &Config{SkipThumbnails: true, DisableResume: true},
 			shouldFail: false,
 			expectCmd:  "yt-dlp.exe",
-			expectArgs: []string{"-a", "test_videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json"},
+			expectArgs: []string{"-a", "test_videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json", "--add-headers", "User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7671.0 Safari/537.36"},
 		},
 		{
 			name:       "with cookie file",
@@ -370,7 +371,7 @@ func TestRunYtdlpWithRunner(t *testing.T) {
 			config:     &Config{DisableResume: true, CookieFile: "cookies.txt"},
 			shouldFail: false,
 			expectCmd:  "yt-dlp.exe",
-			expectArgs: []string{"-a", "test_videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json", "--write-thumbnail", "--convert-thumbnails", "jpg", "--cookies", "cookies.txt"},
+			expectArgs: []string{"-a", "test_videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json", "--add-headers", "User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7671.0 Safari/537.36", "--write-thumbnail", "--convert-thumbnails", "jpg", "--cookies", "cookies.txt"},
 		},
 		{
 			name:       "with cookies from browser",
@@ -379,7 +380,7 @@ func TestRunYtdlpWithRunner(t *testing.T) {
 			config:     &Config{DisableResume: true, CookieFromBrowser: "chrome"},
 			shouldFail: false,
 			expectCmd:  "yt-dlp.exe",
-			expectArgs: []string{"-a", "test_videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json", "--write-thumbnail", "--convert-thumbnails", "jpg", "--cookies-from-browser", "chrome"},
+			expectArgs: []string{"-a", "test_videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json", "--add-headers", "User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7671.0 Safari/537.36", "--write-thumbnail", "--convert-thumbnails", "jpg", "--cookies-from-browser", "chrome"},
 		},
 		{
 			name:       "cookies with skip thumbnails",
@@ -388,7 +389,7 @@ func TestRunYtdlpWithRunner(t *testing.T) {
 			config:     &Config{SkipThumbnails: true, DisableResume: true, CookieFile: "cookies.txt"},
 			shouldFail: false,
 			expectCmd:  "yt-dlp.exe",
-			expectArgs: []string{"-a", "test_videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json", "--cookies", "cookies.txt"},
+			expectArgs: []string{"-a", "test_videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json", "--add-headers", "User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7671.0 Safari/537.36", "--cookies", "cookies.txt"},
 		},
 		{
 			name:       "cookies with collection organization",
@@ -397,7 +398,7 @@ func TestRunYtdlpWithRunner(t *testing.T) {
 			config:     &Config{OrganizeByCollection: true, DisableResume: true, CookieFromBrowser: "firefox"},
 			shouldFail: false,
 			expectCmd:  "yt-dlp.exe",
-			expectArgs: []string{"-a", filepath.Join("favorites", "fav_videos.txt"), "--output", filepath.Join("favorites", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s"), "--write-info-json", "--write-thumbnail", "--convert-thumbnails", "jpg", "--cookies-from-browser", "firefox"},
+			expectArgs: []string{"-a", filepath.Join("favorites", "fav_videos.txt"), "--output", filepath.Join("favorites", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s"), "--write-info-json", "--add-headers", "User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7671.0 Safari/537.36", "--write-thumbnail", "--convert-thumbnails", "jpg", "--cookies-from-browser", "firefox"},
 		},
 		{
 			name:       "resume enabled with flat structure",
@@ -406,7 +407,7 @@ func TestRunYtdlpWithRunner(t *testing.T) {
 			config:     &Config{},
 			shouldFail: false,
 			expectCmd:  "yt-dlp.exe",
-			expectArgs: []string{"-a", "test_videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json", "--write-thumbnail", "--convert-thumbnails", "jpg", "--download-archive", "download_archive.txt", "--no-overwrites", "--continue"},
+			expectArgs: []string{"-a", "test_videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json", "--add-headers", "User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7671.0 Safari/537.36", "--write-thumbnail", "--convert-thumbnails", "jpg", "--download-archive", "download_archive.txt", "--no-overwrites", "--continue"},
 		},
 		{
 			name:       "resume enabled with collection organization",
@@ -415,7 +416,7 @@ func TestRunYtdlpWithRunner(t *testing.T) {
 			config:     &Config{OrganizeByCollection: true},
 			shouldFail: false,
 			expectCmd:  "yt-dlp.exe",
-			expectArgs: []string{"-a", filepath.Join("favorites", "fav_videos.txt"), "--output", filepath.Join("favorites", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s"), "--write-info-json", "--write-thumbnail", "--convert-thumbnails", "jpg", "--download-archive", filepath.Join("favorites", "download_archive.txt"), "--no-overwrites", "--continue"},
+			expectArgs: []string{"-a", filepath.Join("favorites", "fav_videos.txt"), "--output", filepath.Join("favorites", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s"), "--write-info-json", "--add-headers", "User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7671.0 Safari/537.36", "--write-thumbnail", "--convert-thumbnails", "jpg", "--download-archive", filepath.Join("favorites", "download_archive.txt"), "--no-overwrites", "--continue"},
 		},
 		{
 			name:       "resume enabled with skip thumbnails",
@@ -424,7 +425,7 @@ func TestRunYtdlpWithRunner(t *testing.T) {
 			config:     &Config{SkipThumbnails: true},
 			shouldFail: false,
 			expectCmd:  "yt-dlp.exe",
-			expectArgs: []string{"-a", "test_videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json", "--download-archive", "download_archive.txt", "--no-overwrites", "--continue"},
+			expectArgs: []string{"-a", "test_videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json", "--add-headers", "User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7671.0 Safari/537.36", "--download-archive", "download_archive.txt", "--no-overwrites", "--continue"},
 		},
 		{
 			name:       "resume enabled with cookies",
@@ -433,7 +434,7 @@ func TestRunYtdlpWithRunner(t *testing.T) {
 			config:     &Config{CookieFile: "cookies.txt"},
 			shouldFail: false,
 			expectCmd:  "yt-dlp.exe",
-			expectArgs: []string{"-a", "test_videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json", "--write-thumbnail", "--convert-thumbnails", "jpg", "--cookies", "cookies.txt", "--download-archive", "download_archive.txt", "--no-overwrites", "--continue"},
+			expectArgs: []string{"-a", "test_videos.txt", "--output", "%(upload_date)s_%(id)s_%(title).50B.%(ext)s", "--write-info-json", "--add-headers", "User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7671.0 Safari/537.36", "--write-thumbnail", "--convert-thumbnails", "jpg", "--cookies", "cookies.txt", "--download-archive", "download_archive.txt", "--no-overwrites", "--continue"},
 		},
 	}
 
@@ -3178,6 +3179,7 @@ type errorTransport struct {
 func (t *errorTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return nil, t.err
 }
+
 // TestBackupYtdlp tests the backup functionality
 func TestBackupYtdlp(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -4203,6 +4205,36 @@ func TestParseGalleryDlOutput(t *testing.T) {
 				t.Errorf("expected %d failures, got %d", tt.expectedFails, len(failures))
 			}
 		})
+	}
+}
+
+// TestParseGalleryDlOutputDedup tests that duplicate error lines for the same video ID are counted only once
+func TestParseGalleryDlOutputDedup(t *testing.T) {
+	entries := []VideoEntry{
+		{Link: "https://www.tiktok.com/@user/photo/7597601281703693623"},
+		{Link: "https://www.tiktok.com/@user/photo/7597601281703693624"},
+	}
+
+	lines := []string{
+		"ERROR: Unable to download 7597601281703693623: Not available",
+		"[error] 7597601281703693623: failed to extract images",
+		"ERROR: Unable to download 7597601281703693624: connection refused",
+	}
+
+	_, failures := parseGalleryDlOutput(lines, entries)
+
+	// 7597601281703693623 has two error lines but should only appear once in failures
+	if len(failures) != 2 {
+		t.Errorf("expected 2 unique failures, got %d", len(failures))
+	}
+
+	// Verify the correct IDs are present
+	ids := make(map[string]bool)
+	for _, f := range failures {
+		ids[f.VideoID] = true
+	}
+	if !ids["7597601281703693623"] || !ids["7597601281703693624"] {
+		t.Errorf("expected both video IDs in failures, got %v", ids)
 	}
 }
 
@@ -5281,4 +5313,100 @@ func TestPhotoArchive(t *testing.T) {
 			t.Errorf("expected empty archive, got %q", string(data))
 		}
 	})
+}
+
+// TestScanLinesAndCR tests the custom scanner split function that handles \r, \n, and \r\n
+func TestScanLinesAndCR(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected []string
+	}{
+		{
+			name:     "newline only",
+			input:    "line1\nline2\nline3",
+			expected: []string{"line1", "line2", "line3"},
+		},
+		{
+			name:     "carriage return only",
+			input:    "progress1\rprogress2\rprogress3",
+			expected: []string{"progress1", "progress2", "progress3"},
+		},
+		{
+			name:     "crlf",
+			input:    "line1\r\nline2\r\nline3",
+			expected: []string{"line1", "line2", "line3"},
+		},
+		{
+			name:     "mixed delimiters",
+			input:    "[download] Downloading item 1 of 5\n[download]  50.2% of ~10MiB\r[download] 100% of ~10MiB\r\n[download] Downloading item 2 of 5",
+			expected: []string{"[download] Downloading item 1 of 5", "[download]  50.2% of ~10MiB", "[download] 100% of ~10MiB", "[download] Downloading item 2 of 5"},
+		},
+		{
+			name:     "empty lines",
+			input:    "a\n\nb",
+			expected: []string{"a", "", "b"},
+		},
+		{
+			name:     "single line no delimiter",
+			input:    "hello",
+			expected: []string{"hello"},
+		},
+		{
+			name:     "empty input",
+			input:    "",
+			expected: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			scanner := bufio.NewScanner(strings.NewReader(tt.input))
+			scanner.Split(scanLinesAndCR)
+
+			var got []string
+			for scanner.Scan() {
+				got = append(got, scanner.Text())
+			}
+			if err := scanner.Err(); err != nil {
+				t.Fatalf("scanner error: %v", err)
+			}
+
+			if len(got) != len(tt.expected) {
+				t.Fatalf("expected %d tokens, got %d: %v", len(tt.expected), len(got), got)
+			}
+			for i, want := range tt.expected {
+				if got[i] != want {
+					t.Errorf("token[%d]: expected %q, got %q", i, want, got[i])
+				}
+			}
+		})
+	}
+}
+
+// TestIsVerboseLinePercentage tests that intermediate percentage lines are filtered as verbose
+func TestIsVerboseLinePercentage(t *testing.T) {
+	// These should be considered verbose (suppressed)
+	verbose := []string{
+		"[download]  50.2% of ~10.50MiB at 2.50MiB/s ETA 00:03",
+		"[download] 100% of 5.00MiB",
+		"[download]   3.5% of ~22.00MiB at  1.20MiB/s ETA 00:18",
+	}
+	for _, line := range verbose {
+		if !isVerboseLine(line) {
+			t.Errorf("expected %q to be verbose", line)
+		}
+	}
+
+	// These should NOT be verbose
+	notVerbose := []string{
+		"ERROR: [TikTok] 12345: Video not available",
+		"WARNING: some warning",
+		"[download] Downloading item 1 of 10",
+	}
+	for _, line := range notVerbose {
+		if isVerboseLine(line) {
+			t.Errorf("expected %q to NOT be verbose", line)
+		}
+	}
 }
