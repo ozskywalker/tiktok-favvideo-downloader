@@ -25,17 +25,17 @@ jobs:
     steps:
       # 1. Check out the repository code
       - name: Check out code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
 
       # 2. Set up Go environment
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7.0.0
         with:
-          go-version: '1.25.1'  # or whichever version of Go you prefer
+          go-version: '1.26.6'  # or whichever version of Go you prefer
 
       # 3. (Optional) Cache Go modules for faster builds
       - name: Cache modules
-        uses: actions/cache@v4
+        uses: actions/cache@v6.1.0
         with:
           path: |
             ~/go/pkg/mod
@@ -49,7 +49,7 @@ jobs:
 
       # 5. Run lint checks (golangci-lint-action)
       - name: Run lint checks
-        uses: golangci/golangci-lint-action@v8.0.0
+        uses: golangci/golangci-lint-action@v9.3.0
 
       # 7. Run Go tests
       - name: Run Go tests
