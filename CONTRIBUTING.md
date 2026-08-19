@@ -5,7 +5,7 @@ Thank you for considering contributing to this project! This document outlines t
 ## Development Setup
 
 ### Prerequisites
-- **Go 1.25.1 or later** (required for building)
+- **Go 1.26.6 or later** (required for building)
 - Git for version control
 - A Windows machine for testing (or WSL/cross-compilation for non-Windows development)
 
@@ -180,7 +180,7 @@ This project uses **semantic versioning** (e.g., `v1.2.3`):
 - Pull requests targeting `main`
 
 **Actions**:
-- Sets up Go 1.25.1
+- Sets up Go 1.26.6
 - Downloads dependencies
 - Runs linting (`golangci-lint`)
 - Runs full test suite
